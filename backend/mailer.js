@@ -8,7 +8,7 @@ dotenv.config();
 //   SMTP_PORT=587
 //   SMTP_USER=tucorreo@gmail.com
 //   SMTP_PASS=clave-de-aplicacion  (en Gmail: contrasena de aplicacion, NO la normal)
-//   MAIL_FROM="Casas & Quintas <tucorreo@gmail.com>"
+//   MAIL_FROM="Goya Recibe <tucorreo@gmail.com>"
 //
 // Si no hay SMTP configurado, los mails se muestran por consola (modo prueba).
 
@@ -47,7 +47,7 @@ export async function enviarMail(para, asunto, html) {
 export function mailBienvenida(usuario) {
   return {
     para: usuario.correo,
-    asunto: "Bienvenido a Casas & Quintas",
+    asunto: "Bienvenido a Goya Recibe",
     html: `
       <h2>Hola ${usuario.nombre} 👋</h2>
       <p>Tu cuenta fue creada con exito.</p>
@@ -57,7 +57,7 @@ export function mailBienvenida(usuario) {
         ${usuario.telefono ? `<li><b>Telefono:</b> ${usuario.telefono}</li>` : ""}
       </ul>
       <p>Ya podes iniciar sesion y hacer reservas en nuestras propiedades.</p>
-      <p style="color:#888">Casas & Quintas</p>
+      <p style="color:#888">Goya Recibe</p>
     `,
   };
 }
@@ -86,7 +86,7 @@ export function mailReserva({ usuario, propiedad, reserva }) {
         <tr><td style="background:#f0f4f8"><b>Estado del pago</b></td><td>Pagado</td></tr>
       </table>
       <p>Te esperamos!</p>
-      <p style="color:#888">Casas & Quintas</p>
+      <p style="color:#888">Goya Recibe</p>
     `,
   };
 }

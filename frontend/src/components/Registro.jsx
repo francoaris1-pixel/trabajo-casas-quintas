@@ -58,7 +58,7 @@ export default function Registro({ onRegistro, irALogin }) {
     <div className="auth-page">
       <div className="auth-card">
         <h2>Crear cuenta</h2>
-        <p className="auth-subtitle">Registrate para reservar casas y quintas.</p>
+        <p className="auth-subtitle">Registrate para reservar Goya Recibe.</p>
         <form className="auth-form" onSubmit={handleSubmit}>
           <div className="auth-field">
             <label className="auth-label" htmlFor="reg-nombre">Nombre</label>

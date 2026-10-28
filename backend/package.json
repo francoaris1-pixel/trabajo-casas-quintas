@@ -1,7 +1,7 @@
 {
   "name": "reservas-backend",
   "version": "1.0.0",
-  "description": "Backend para pagina de reserva de casas y quintas",
+  "description": "Backend para pagina de reserva de Goya Recibe",
   "main": "index.js",
   "type": "module",
   "scripts": {

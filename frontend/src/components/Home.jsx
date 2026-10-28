@@ -109,12 +109,12 @@ export default function Home({ irALogin }) {
     <div className="mitula-home">
       <div className="mt-topbar">
         <div className="mt-brand">
-          Casas <span>& Quintas</span>
+          Goya Recibe
         </div>
       </div>
 
       <section className="mt-filterbar">
-        <div className="mt-filter-title">Casas y quintas en alquiler</div>
+        <div className="mt-filter-title">Goya Recibe en alquiler</div>
 
         <div className="mt-quick-filters">
           {QUICK_FILTERS.map((f) => (

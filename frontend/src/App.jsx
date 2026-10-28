@@ -108,7 +108,7 @@ export default function App() {
     <div className="app">
       <nav className="navbar">
         <span className="logo" onClick={() => setVista("home")}>
-          Casas & Quintas
+          Goya Recibe
         </span>
         <div>
           <button onClick={() => setVista("home")}>Home</button>
