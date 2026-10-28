@@ -1,4 +1,4 @@
-import mongoose from "mongoose";
+﻿import mongoose from "mongoose";
 import {
   Usuario,
   Propiedad,
@@ -11,7 +11,7 @@ import {
   MetodoPago,
 } from "./models.js";
 
-const uri = "mongodb://127.0.0.1:27017/quintas_goya";
+const uri = "mongodb+srv://francoaris72_db_user:goya12345@cluster0.l79b1bz.mongodb.net/quintas_goya?retryWrites=true&w=majority";
 
 async function seed() {
   try {
