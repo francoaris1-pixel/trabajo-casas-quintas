@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+﻿import React, { useState } from "react";
 import Home from "./components/Home.jsx";
 import Login from "./components/Login.jsx";
 import Registro from "./components/Registro.jsx";
@@ -15,7 +15,7 @@ class ErrorBoundary extends React.Component {
     return { hasError: true, error };
   }
   componentDidCatch(error, info) {
-    console.error("=== DIAGNÓSTICO CLINE (ErrorBoundary) ===", error, info);
+    console.error("=== DIAGNÃ“STICO CLINE (ErrorBoundary) ===", error, info);
   }
   render() {
     if (this.state.hasError) {
@@ -60,7 +60,7 @@ export default function App() {
     }
 
     try {
-      const res = await fetch("http://localhost:4000/api/propiedades");
+      const res = await fetch("/api/propiedades");
       const data = await res.json();
       const props = Array.isArray(data) ? data : [];
       // El inquilino ve todas las publicadas; el anfitrion las suyas
@@ -150,3 +150,4 @@ export default function App() {
     </div>
   );
 }
+

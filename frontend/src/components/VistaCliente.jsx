@@ -1,6 +1,6 @@
 ﻿import React, { useEffect, useMemo, useState } from "react";
 
-const API = "http://localhost:4000";
+const API = "";
 
 // Genera la grilla de un mes: de lunes a domingo
 function grillaMes(anio, mes) {
@@ -337,3 +337,4 @@ export default function VistaCliente({ usuario, propiedades }) {
     </section>
   );
 }
+

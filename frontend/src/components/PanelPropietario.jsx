@@ -1,6 +1,6 @@
 ﻿import React, { useEffect, useState } from "react";
 
-const API = "http://localhost:4000";
+const API = "";
 
 const fmtMoney = (n) => "$" + Number(n || 0).toLocaleString("es-AR");
 const fmtDate = (value) => {
@@ -386,4 +386,5 @@ export default function PanelPropietario({ usuario }) {
     </div>
   );
 }
+
 

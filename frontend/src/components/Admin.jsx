@@ -1,6 +1,6 @@
 ﻿import React, { useEffect, useState } from "react";
 
-const API = "http://localhost:4000";
+const API = "";
 
 export default function Admin({ usuario }) {
   const [tab, setTab] = useState("propietarios");
@@ -307,3 +307,4 @@ export default function Admin({ usuario }) {
     </div>
   );
 }
+

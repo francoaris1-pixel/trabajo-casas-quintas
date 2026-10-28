@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+﻿import React, { useState } from "react";
 
 export default function Reservas({ usuario, propiedades }) {
   const listaPropiedades = Array.isArray(propiedades) ? propiedades : [];
@@ -21,7 +21,7 @@ export default function Reservas({ usuario, propiedades }) {
     setMensaje("");
 
     try {
-      const res = await fetch("http://localhost:4000/api/reservas", {
+      const res = await fetch("/api/reservas", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(form),
@@ -43,7 +43,7 @@ export default function Reservas({ usuario, propiedades }) {
 
       {listaPropiedades.length === 0 ? (
         <p className="nota">
-          ¡Aún no tienes reservas! Explora las casas quintas disponibles en Goya para realizar tu primer alquiler.
+          Â¡AÃºn no tienes reservas! Explora las casas quintas disponibles en Goya para realizar tu primer alquiler.
         </p>
       ) : (
         <div className="cards">
@@ -98,3 +98,4 @@ export default function Reservas({ usuario, propiedades }) {
     </section>
   );
 }
+

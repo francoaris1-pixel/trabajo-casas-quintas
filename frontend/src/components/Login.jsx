@@ -23,7 +23,7 @@ export default function Login({ onLogin }) {
     }
     setCargando(true);
     try {
-      const res = await fetch("http://localhost:4000/api/login", {
+      const res = await fetch("/api/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ correo, contrasena }),
@@ -112,4 +112,5 @@ export default function Login({ onLogin }) {
     </div>
   );
 }
+
 

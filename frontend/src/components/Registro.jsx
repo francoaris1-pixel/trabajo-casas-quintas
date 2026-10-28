@@ -36,7 +36,7 @@ export default function Registro({ onRegistro, irALogin }) {
     }
     setCargando(true);
     try {
-      const res = await fetch("http://localhost:4000/api/registro", {
+      const res = await fetch("/api/registro", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(form),
@@ -171,3 +171,4 @@ export default function Registro({ onRegistro, irALogin }) {
     </div>
   );
 }
+

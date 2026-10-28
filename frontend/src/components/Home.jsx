@@ -1,6 +1,6 @@
 ﻿import React, { useEffect, useState } from "react";
 
-const API = "http://localhost:4000";
+const API = "";
 
 const fmt = (n) => "$" + Number(n).toLocaleString("es-AR");
 
@@ -256,3 +256,4 @@ export default function Home({ irALogin }) {
     </div>
   );
 }
+
