@@ -197,13 +197,13 @@ export default function Admin({ usuario }) {
                     </div>
                     <div className="admin-prop-actions">
                       <button className="btn-admin btn-admin-edit" onClick={() => abrirEdicion(p)}>
-                        ✏️ Editar
+                        Editar
                       </button>
                       <button className="btn-admin btn-admin-approve" onClick={() => aprobar(p)}>
-                        ✔️ Aprobar
+                        Aprobar
                       </button>
                       <button className="btn-admin btn-admin-delete" onClick={() => eliminar(p)}>
-                        🗑️ Eliminar
+                        Eliminar
                       </button>
                     </div>
                   </div>
