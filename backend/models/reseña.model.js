@@ -15,9 +15,10 @@ const resenaSchema = new mongoose.Schema(
   { versionKey: false, collection: "resenas" }
 );
 
-const Resena = mongoose.model("Resena", resenaSchema);
+const Resena = mongoose.model("Resena", resenaSchema, "reseñas");
 
 export { Resena };
 export default Resena;
+
 
 

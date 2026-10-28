@@ -15,9 +15,10 @@ const liquidacionSchema = new mongoose.Schema(
   { versionKey: false, collection: "liquidaciones" }
 );
 
-const Liquidacion = mongoose.model("Liquidacion", liquidacionSchema);
+const Liquidacion = mongoose.model("Liquidacion", liquidacionSchema, "liquidaciones");
 
 export { Liquidacion };
 export default Liquidacion;
+
 
 

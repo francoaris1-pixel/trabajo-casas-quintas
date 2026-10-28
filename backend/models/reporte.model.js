@@ -16,9 +16,10 @@ const reporteSchema = new mongoose.Schema(
   { versionKey: false, collection: "reportes" }
 );
 
-const Reporte = mongoose.model("Reporte", reporteSchema);
+const Reporte = mongoose.model("Reporte", reporteSchema, "reportes");
 
 export { Reporte };
 export default Reporte;
+
 
 

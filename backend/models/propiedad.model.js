@@ -17,9 +17,10 @@ const propiedadSchema = new mongoose.Schema(
   { versionKey: false, collection: "propiedades" }
 );
 
-const Propiedad = mongoose.model("Propiedad", propiedadSchema);
+const Propiedad = mongoose.model("Propiedad", propiedadSchema, "propiedades");
 
 export { Propiedad };
 export default Propiedad;
+
 
 

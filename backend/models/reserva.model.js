@@ -21,9 +21,10 @@ const reservaSchema = new mongoose.Schema(
   { versionKey: false, collection: "reservas" }
 );
 
-const Reserva = mongoose.model("Reserva", reservaSchema);
+const Reserva = mongoose.model("Reserva", reservaSchema, "reservas");
 
 export { Reserva };
 export default Reserva;
+
 
 

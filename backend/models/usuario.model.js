@@ -16,9 +16,10 @@ const usuarioSchema = new mongoose.Schema(
   { versionKey: false, collection: "usuarios" }
 );
 
-const Usuario = mongoose.model("Usuario", usuarioSchema);
+const Usuario = mongoose.model("Usuario", usuarioSchema, "usuarios");
 
 export { Usuario };
 export default Usuario;
+
 
 

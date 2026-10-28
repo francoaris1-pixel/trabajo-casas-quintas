@@ -11,9 +11,10 @@ const metodoPagoSchema = new mongoose.Schema(
   { versionKey: false, collection: "metodosPago" }
 );
 
-const MetodoPago = mongoose.model("MetodoPago", metodoPagoSchema);
+const MetodoPago = mongoose.model("MetodoPago", metodoPagoSchema, "metodosPago");
 
 export { MetodoPago };
 export default MetodoPago;
+
 
 

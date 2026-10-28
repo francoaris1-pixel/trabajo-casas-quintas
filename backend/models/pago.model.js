@@ -15,9 +15,10 @@ const pagoSchema = new mongoose.Schema(
   { versionKey: false, collection: "pagos" }
 );
 
-const Pago = mongoose.model("Pago", pagoSchema);
+const Pago = mongoose.model("Pago", pagoSchema, "pagos");
 
 export { Pago };
 export default Pago;
+
 
 
