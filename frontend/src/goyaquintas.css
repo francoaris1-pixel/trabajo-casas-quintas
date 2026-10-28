@@ -195,3 +195,5 @@ body { background: var(--bg); color: var(--text); font-family: "Inter", "Montser
 .tabla-wrapper { overflow-x: auto; }
 @media (max-width: 900px) { .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .propiedad-row-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 640px) { .form-grid, .stats-grid, .propiedad-row-fields { grid-template-columns: 1fr; } .form-actions { justify-content: stretch; } .btn-large { width: 100%; } }
+.mt-rating { color: #f5b301; font-size: .95rem; font-weight: 700; letter-spacing: .05em; }
+.mt-rating span { color: var(--muted); margin-left: .35rem; font-weight: 600; }

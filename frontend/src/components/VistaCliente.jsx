@@ -1,4 +1,5 @@
 ﻿import React, { useEffect, useMemo, useState } from "react";
+import { MOCK_RESERVATIONS } from "../mockData.js";
 
 const API = "";
 
@@ -100,53 +101,31 @@ export default function VistaCliente({ usuario, propiedades }) {
   const [cancelandoId, setCancelandoId] = useState(null);
   const [confirmarId, setConfirmarId] = useState(null);
 
-  const cargarReservas = async (id) => {
+  const cargarReservas = (id) => {
     if (!id) return;
-    try {
-      const res = await fetch(`${API}/api/reservas/${id}`);
-      const data = await res.json();
-      setReservas(Array.isArray(data) ? data : []);
-    } catch {
-      setReservas([]);
-    }
+    const propertyReservations = MOCK_RESERVATIONS.filter(
+      (r) => String(r.propiedadId) === String(id) && r.estado !== "cancelada"
+    );
+    setReservas(propertyReservations);
   };
 
-  const cargarMisReservas = async () => {
+  const cargarMisReservas = () => {
     if (!usuario?.id) return;
-    try {
-      const res = await fetch(`${API}/api/reservas/turista/${usuario.id}`);
-      if (res.ok) {
-        const data = await res.json();
-        setMisReservas(Array.isArray(data) ? data : []);
-      }
-    } catch {
-      setMisReservas([]);
-    }
+    const mine = MOCK_RESERVATIONS.filter((r) => String(r.turista?._id) === String(usuario.id));
+    setMisReservas(mine);
   };
 
-  const cancelarReserva = async (id) => {
-    if (!usuario?.id) return;
+  const cancelarReserva = (id) => {
     setCancelandoId(id);
-    try {
-      const res = await fetch(`${API}/api/reservas/${id}/cancelar`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ turistaId: usuario.id }),
-      });
-      const datos = await res.json();
-      if (res.ok) {
-        setMensaje(datos.mensaje || "Reserva cancelada correctamente");
-        await cargarMisReservas();
-        await cargarReservas(seleccionada);
-      } else {
-        setError(datos.error || "No se pudo cancelar la reserva");
-      }
-    } catch {
-      setError("No se pudo conectar con el servidor");
-    } finally {
-      setCancelandoId(null);
-      setConfirmarId(null);
-    }
+    const index = MOCK_RESERVATIONS.findIndex((r) => String(r.id || r._id) === String(id));
+    if (index >= 0) MOCK_RESERVATIONS[index].estado = "cancelada";
+    setMisReservas((prev) =>
+      prev.map((r) => (String(r.id || r._id) === String(id) ? { ...r, estado: "cancelada" } : r))
+    );
+    setReservas((prev) => prev.filter((r) => String(r.id || r._id) !== String(id)));
+    setMensaje("Reserva cancelada correctamente");
+    setCancelandoId(null);
+    setConfirmarId(null);
   };
 
   useEffect(() => {
@@ -169,7 +148,7 @@ export default function VistaCliente({ usuario, propiedades }) {
   const handleChange = (e) =>
     setForm({ ...form, [e.target.name]: e.target.value });
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = (e) => {
     e.preventDefault();
     setMensaje("");
     setError("");
@@ -179,27 +158,38 @@ export default function VistaCliente({ usuario, propiedades }) {
       return;
     }
 
-    const res = await fetch(`${API}/api/reservas`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        propiedadId: seleccionada,
-        turistaId: usuario.id,
-        checkIn: form.desde,
-        checkOut: form.hasta,
-        metodoPago: form.metodoPago,
-      }),
-    });
-    const datos = await res.json();
-
-    if (res.ok) {
-      setMensaje(datos.mensaje);
-      setForm({ ...form, desde: "", hasta: "" });
-      cargarReservas(seleccionada); // refresca el calendario
-      cargarMisReservas();
-    } else {
-      setError(datos.error);
+    const propiedad = listaPropiedades.find((p) => p._id === seleccionada);
+    if (!propiedad) {
+      setError("Propiedad no encontrada");
+      return;
     }
+
+    const noches = Math.max(
+      1,
+      Math.round((new Date(form.hasta) - new Date(form.desde)) / 86400000)
+    );
+    const nuevaReserva = {
+      id: `r-${Date.now()}`,
+      _id: `r-${Date.now()}`,
+      propiedadId: seleccionada,
+      propiedadTitulo: propiedad.titulo,
+      turista: {
+        _id: usuario.id,
+        nombre: usuario.nombre,
+        apellido: usuario.apellido,
+        telefono: usuario.telefono,
+      },
+      checkIn: form.desde,
+      checkOut: form.hasta,
+      montoTotal: noches * (propiedad.precioPorNoche || 0),
+      estado: "confirmada",
+    };
+
+    MOCK_RESERVATIONS.push(nuevaReserva);
+    setReservas((prev) => [...prev, nuevaReserva]);
+    setMisReservas((prev) => [...prev, nuevaReserva]);
+    setForm({ desde: "", hasta: "", metodoPago: "efectivo" });
+    setMensaje("Reserva registrada correctamente");
   };
 
   const listaPropiedades = Array.isArray(propiedades) ? propiedades : [];

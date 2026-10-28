@@ -22,25 +22,52 @@ export default function Login({ onLogin }) {
       return;
     }
     setCargando(true);
-    try {
-      const res = await fetch("/api/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ correo, contrasena }),
-      });
-      const datos = await res.json();
-      if (!res.ok) {
-        setError(datos.error || "Error al iniciar sesion");
+    setError("");
+
+    window.setTimeout(() => {
+      let usuarioLogueado;
+      const email = correo.toLowerCase();
+
+      if (email === "admin@quintasgoya.com") {
+        usuarioLogueado = {
+          id: "1",
+          _id: "1",
+          nombre: "Administrador",
+          apellido: "Maestro",
+          correo,
+          telefono: "",
+          rol: "admin",
+        };
+      } else if (email.includes("propietario") || email.includes("anfitrion")) {
+        usuarioLogueado = {
+          id: "2",
+          _id: "2",
+          nombre: "Juan",
+          apellido: "Perez",
+          correo,
+          telefono: "3794000000",
+          rol: "anfitrion",
+        };
       } else {
-        const usuarioLogueado = datos.usuario || datos;
-        localStorage.setItem("user", JSON.stringify(usuarioLogueado));
-        onLogin({ ...datos, usuario: usuarioLogueado });
+        usuarioLogueado = {
+          id: "3",
+          _id: "3",
+          nombre: correo.split("@")[0] || "Usuario",
+          apellido: "Demo",
+          correo,
+          telefono: "",
+          rol: "inquilino",
+        };
       }
-    } catch {
-      setError("No se pudo conectar con el servidor");
-    } finally {
+
+      try {
+        localStorage.setItem("user", JSON.stringify(usuarioLogueado));
+      } catch {
+        // ignore
+      }
+      onLogin({ mensaje: "Bienvenido", usuario: usuarioLogueado });
       setCargando(false);
-    }
+    }, 350);
   };
 
   return (
@@ -112,5 +139,6 @@ export default function Login({ onLogin }) {
     </div>
   );
 }
+
 
 

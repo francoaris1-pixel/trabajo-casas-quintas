@@ -1,4 +1,5 @@
 ﻿import React, { useEffect, useState } from "react";
+import { MOCK_PROPERTIES } from "../mockData.js";
 
 const API = "";
 
@@ -71,28 +72,11 @@ export default function Home({ irALogin }) {
   const [favoritos, setFavoritos] = useState(new Set());
 
   useEffect(() => {
-    let activo = true;
-    async function cargar() {
-      try {
-        const res = await fetch(`${API}/api/propiedades`);
-        if (!res.ok) throw new Error("No se pudieron cargar las propiedades");
-        const data = await res.json();
-        if (!activo) return;
-        setPropiedades(Array.isArray(data) ? data.map(mapPropiedad) : []);
-      } catch (e) {
-        if (activo) {
-          setError(
-            "No se pudo conectar con el servidor. Verifica que el backend este encendido."
-          );
-        }
-      } finally {
-        if (activo) setCargando(false);
-      }
-    }
-    cargar();
-    return () => {
-      activo = false;
-    };
+    const timer = window.setTimeout(() => {
+      setPropiedades(MOCK_PROPERTIES.map(mapPropiedad));
+      setCargando(false);
+    }, 250);
+    return () => window.clearTimeout(timer);
   }, []);
 
   const toggleFiltro = (key) =>
@@ -225,6 +209,10 @@ export default function Home({ irALogin }) {
 
               <div className="mt-card-body">
                 <h3 className="mt-card-title">{p.titulo}</h3>
+                <div className="mt-rating">
+                  {"★".repeat(Math.round(p.rating || 5))}
+                  <span>{Number(p.rating || 5).toFixed(1)}</span>
+                </div>
 
                 <div className="mt-price-row">
                   <span className="mt-price">{fmt(p.precio)}</span>
@@ -256,4 +244,5 @@ export default function Home({ irALogin }) {
     </div>
   );
 }
+
 

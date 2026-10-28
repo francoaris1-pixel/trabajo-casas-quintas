@@ -1,4 +1,5 @@
 ﻿import React, { useEffect, useState } from "react";
+import { MOCK_PROPERTIES, MOCK_OWNERS } from "../mockData.js";
 
 const API = "";
 
@@ -18,22 +19,11 @@ export default function Admin({ usuario }) {
     estado: "pending_review",
   });
 
-  const cargarPanel = async () => {
+  const cargarPanel = () => {
     setCargando(true);
-    try {
-      const [resOwners, resProps] = await Promise.all([
-        fetch(`${API}/api/admin/propietarios`),
-        fetch(`${API}/api/admin/propiedades`),
-      ]);
-      const ownersData = await resOwners.json();
-      const propsData = await resProps.json();
-      setPropietarios(Array.isArray(ownersData) ? ownersData : []);
-      setPropiedades(Array.isArray(propsData) ? propsData : []);
-    } catch {
-      setMensaje("No se pudo conectar con el servidor");
-    } finally {
-      setCargando(false);
-    }
+    setPropietarios(MOCK_OWNERS);
+    setPropiedades(MOCK_PROPERTIES);
+    setCargando(false);
   };
 
   useEffect(() => {
@@ -52,63 +42,43 @@ export default function Admin({ usuario }) {
     });
   };
 
-  const guardarEdicion = async (e) => {
+  const guardarEdicion = (e) => {
     e.preventDefault();
     if (!editando) return;
-    setMensaje("");
-    try {
-      const res = await fetch(`${API}/api/admin/propiedades/${editando._id || editando.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          titulo: formEdit.titulo,
-          descripcion: formEdit.descripcion,
-          direccion: formEdit.direccion,
-          maxHuespedes: Number(formEdit.maxHuespedes),
-          precioPorNoche: Number(formEdit.precioPorNoche),
-          estado: formEdit.estado,
-        }),
-      });
-      const datos = await res.json();
-      setMensaje(res.ok ? datos.mensaje : datos.error);
-      if (res.ok) {
-        setEditando(null);
-        cargarPanel();
-      }
-    } catch {
-      setMensaje("No se pudo conectar con el servidor");
-    }
+    setPropiedades((prev) =>
+      prev.map((p) =>
+        String(p._id || p.id) === String(editando._id || editando.id)
+          ? {
+              ...p,
+              titulo: formEdit.titulo,
+              descripcion: formEdit.descripcion,
+              direccion: formEdit.direccion,
+              maxHuespedes: Number(formEdit.maxHuespedes),
+              precioPorNoche: Number(formEdit.precioPorNoche),
+              estado: formEdit.estado,
+            }
+          : p
+      )
+    );
+    setMensaje("Propiedad actualizada correctamente");
+    setEditando(null);
   };
 
-  const aprobar = async (prop) => {
-    setMensaje("");
-    try {
-      const res = await fetch(`${API}/api/admin/propiedades/${prop._id || prop.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ estado: "disponible" }),
-      });
-      const datos = await res.json();
-      setMensaje(res.ok ? datos.mensaje : datos.error);
-      if (res.ok) cargarPanel();
-    } catch {
-      setMensaje("No se pudo conectar con el servidor");
-    }
+  const aprobar = (prop) => {
+    setPropiedades((prev) =>
+      prev.map((p) =>
+        String(p._id || p.id) === String(prop._id || prop.id)
+          ? { ...p, estado: "disponible" }
+          : p
+      )
+    );
+    setMensaje("Propiedad aprobada");
   };
 
-  const eliminar = async (prop) => {
+  const eliminar = (prop) => {
     if (!window.confirm("¿Seguro que quieres eliminar esta propiedad?")) return;
-    setMensaje("");
-    try {
-      const res = await fetch(`${API}/api/admin/propiedades/${prop._id || prop.id}`, {
-        method: "DELETE",
-      });
-      const datos = await res.json();
-      setMensaje(res.ok ? datos.mensaje : datos.error);
-      if (res.ok) cargarPanel();
-    } catch {
-      setMensaje("No se pudo conectar con el servidor");
-    }
+    setPropiedades((prev) => prev.filter((p) => String(p._id || p.id) !== String(prop._id || prop.id)));
+    setMensaje("Propiedad eliminada");
   };
 
   if (!usuario || usuario.rol !== "admin") {
@@ -307,4 +277,6 @@ export default function Admin({ usuario }) {
     </div>
   );
 }
+
+
 

@@ -5,6 +5,7 @@ import Registro from "./components/Registro.jsx";
 import VistaCliente from "./components/VistaCliente.jsx";
 import PanelPropietario from "./components/PanelPropietario.jsx";
 import Admin from "./components/Admin.jsx";
+import { MOCK_PROPERTIES } from "./mockData.js";
 
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -59,19 +60,12 @@ export default function App() {
       // ignore
     }
 
-    try {
-      const res = await fetch("/api/propiedades");
-      const data = await res.json();
-      const props = Array.isArray(data) ? data : [];
-      // El inquilino ve todas las publicadas; el anfitrion las suyas
-      setPropiedades(
-        usuarioLogueado?.rol === "inquilino"
-          ? props
-          : props.filter((p) => p.propietario?._id === usuarioLogueado?.id)
-      );
-    } catch {
-      setPropiedades([]);
-    }
+    const props = MOCK_PROPERTIES;
+    setPropiedades(
+      usuarioLogueado?.rol === "inquilino"
+        ? props
+        : props.filter((p) => p.propietario?._id === usuarioLogueado?.id)
+    );
   };
 
   const handleLogout = () => {
@@ -150,4 +144,5 @@ export default function App() {
     </div>
   );
 }
+
 
