@@ -197,3 +197,27 @@ body { background: var(--bg); color: var(--text); font-family: "Inter", "Montser
 @media (max-width: 640px) { .form-grid, .stats-grid, .propiedad-row-fields { grid-template-columns: 1fr; } .form-actions { justify-content: stretch; } .btn-large { width: 100%; } }
 .mt-rating { color: #f5b301; font-size: .95rem; font-weight: 700; letter-spacing: .05em; }
 .mt-rating span { color: var(--muted); margin-left: .35rem; font-weight: 600; }
+/* Panel admin accesible para personas mayores */
+.admin-prop-list { display: flex; flex-direction: column; gap: 1.5rem; }
+.admin-prop-card { background: #fff; border: 2px solid var(--border); border-radius: 16px; box-shadow: var(--shadow); padding: 1.25rem; }
+.admin-prop-card-inner { display: flex; gap: 1.25rem; align-items: center; flex-wrap: wrap; }
+.admin-prop-thumb { width: 180px; height: 130px; object-fit: cover; border-radius: 12px; flex: 0 0 auto; background: #e5e7eb; }
+.admin-prop-thumb.hidden { display: none; }
+.admin-prop-info { flex: 1 1 280px; display: flex; flex-direction: column; gap: .5rem; }
+.admin-prop-title { font-size: 1.7rem; font-weight: 800; color: var(--text); margin-bottom: .25rem; line-height: 1.2; }
+.admin-prop-line { font-size: 1.15rem; color: #1f2937; font-weight: 600; line-height: 1.4; }
+.admin-prop-actions { display: flex; flex-direction: column; gap: .75rem; min-width: 220px; }
+.btn-admin { width: 100%; padding: 1rem 1.25rem; font-size: 1.15rem; font-weight: 700; border: none; border-radius: 12px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: .5rem; transition: transform .15s ease, filter .15s ease; }
+.btn-admin:hover { transform: translateY(-1px); filter: brightness(1.05); }
+.btn-admin-edit { background: #2563eb; color: #fff; }
+.btn-admin-approve { background: #16a34a; color: #fff; }
+.btn-admin-delete { background: #dc2626; color: #fff; }
+.admin-confirm-modal { max-width: 560px; }
+.admin-confirm-modal h3 { font-size: 1.9rem; font-weight: 800; margin-bottom: .75rem; color: var(--text); }
+.admin-confirm-modal p { font-size: 1.25rem; color: var(--text); margin-bottom: 1.25rem; line-height: 1.4; }
+.btn-admin-large { padding: 1rem 1.5rem; font-size: 1.2rem; font-weight: 700; }
+@media (max-width: 720px) {
+  .admin-prop-card-inner { flex-direction: column; align-items: stretch; }
+  .admin-prop-thumb { width: 100%; height: 180px; }
+  .admin-prop-actions { min-width: 0; }
+}

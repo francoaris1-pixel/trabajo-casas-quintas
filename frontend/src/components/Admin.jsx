@@ -9,6 +9,7 @@ export default function Admin({ usuario }) {
   const [propiedades, setPropiedades] = useState([]);
   const [mensaje, setMensaje] = useState("");
   const [cargando, setCargando] = useState(true);
+  const [confirmacion, setConfirmacion] = useState(null);
   const [editando, setEditando] = useState(null);
   const [formEdit, setFormEdit] = useState({
     titulo: "",
@@ -64,22 +65,33 @@ export default function Admin({ usuario }) {
     setEditando(null);
   };
 
-  const aprobar = (prop) => {
-    setPropiedades((prev) =>
-      prev.map((p) =>
-        String(p._id || p.id) === String(prop._id || prop.id)
-          ? { ...p, estado: "disponible" }
-          : p
-      )
-    );
-    setMensaje("Propiedad aprobada");
+  const pedirConfirmacion = (tipo, prop) => {
+    setConfirmacion({ tipo, prop });
   };
 
-  const eliminar = (prop) => {
-    if (!window.confirm("¿Seguro que quieres eliminar esta propiedad?")) return;
-    setPropiedades((prev) => prev.filter((p) => String(p._id || p.id) !== String(prop._id || prop.id)));
-    setMensaje("Propiedad eliminada");
+  const confirmarAccion = () => {
+    if (!confirmacion) return;
+    const { tipo, prop } = confirmacion;
+    if (tipo === "eliminar") {
+      setPropiedades((prev) =>
+        prev.filter((p) => String(p._id || p.id) !== String(prop._id || prop.id))
+      );
+      setMensaje("Propiedad eliminada");
+    } else if (tipo === "aprobar") {
+      setPropiedades((prev) =>
+        prev.map((p) =>
+          String(p._id || p.id) === String(prop._id || prop.id)
+            ? { ...p, estado: "disponible" }
+            : p
+        )
+      );
+      setMensaje("Propiedad aprobada");
+    }
+    setConfirmacion(null);
   };
+
+  const aprobar = (prop) => pedirConfirmacion("aprobar", prop);
+  const eliminar = (prop) => pedirConfirmacion("eliminar", prop);
 
   if (!usuario || usuario.rol !== "admin") {
     return (
@@ -164,26 +176,34 @@ export default function Admin({ usuario }) {
             <div className="admin-prop-list">
               {propiedades.map((p) => (
                 <article className="admin-prop-card" key={p._id || p.id}>
-                  <div className="admin-prop-main">
-                    <div>
-                      <h3>{p.titulo}</h3>
-                      <p className="nota">
-                        Propietario: {p.propietario?.nombre || "-"} {p.propietario?.apellido || ""}
+                  <div className="admin-prop-card-inner">
+                    <img
+                      className="admin-prop-thumb"
+                      src={p.foto}
+                      alt={p.titulo}
+                      onError={(e) => e.currentTarget.classList.add("hidden")}
+                    />
+                    <div className="admin-prop-info">
+                      <h3 className="admin-prop-title">{p.titulo}</h3>
+                      <p className="admin-prop-line">
+                        <strong>Propietario:</strong> {p.propietario?.nombre || "-"} {p.propietario?.apellido || ""}
                       </p>
-                      <p className="nota">{p.direccion || "Sin dirección"}</p>
-                      <p className="nota">
-                        ${Number(p.precioPorNoche || 0).toLocaleString("es-AR")} / noche · {p.maxHuespedes} huéspedes · {p.estado || "pending_review"}
+                      <p className="admin-prop-line">{p.direccion || "Sin dirección"}</p>
+                      <p className="admin-prop-line">
+                        <strong>Precio:</strong> ${Number(p.precioPorNoche || 0).toLocaleString("es-AR")} por noche ·{" "}
+                        <strong>Huéspedes:</strong> {p.maxHuespedes} · <strong>Estado:</strong>{" "}
+                        {p.estado === "disponible" ? "Aprobada / Disponible" : "Bajo revisión"}
                       </p>
                     </div>
-                    <div className="row-actions">
-                      <button className="btn-primary chico" onClick={() => abrirEdicion(p)}>
-                        Editar
+                    <div className="admin-prop-actions">
+                      <button className="btn-admin btn-admin-edit" onClick={() => abrirEdicion(p)}>
+                        ✏️ Editar
                       </button>
-                      <button className="btn-secondary chico" onClick={() => aprobar(p)}>
-                        Aprobar
+                      <button className="btn-admin btn-admin-approve" onClick={() => aprobar(p)}>
+                        ✔️ Aprobar
                       </button>
-                      <button className="btn-danger chico" onClick={() => eliminar(p)}>
-                        Eliminar
+                      <button className="btn-admin btn-admin-delete" onClick={() => eliminar(p)}>
+                        🗑️ Eliminar
                       </button>
                     </div>
                   </div>
@@ -192,6 +212,34 @@ export default function Admin({ usuario }) {
             </div>
           )}
         </section>
+      )}
+
+      {confirmacion && (
+        <div className="modal-overlay">
+          <div className="modal-card admin-confirm-modal">
+            <h3>¿Estás seguro?</h3>
+            <p>
+              {confirmacion.tipo === "eliminar"
+                ? "¿Estás seguro de que quieres eliminar esta propiedad?"
+                : "¿Estás seguro de que quieres aprobar esta propiedad?"}
+            </p>
+            <div className="modal-actions">
+              <button className="btn-secondary btn-admin-large" onClick={() => setConfirmacion(null)}>
+                No, cancelar
+              </button>
+              <button
+                className={
+                  confirmacion.tipo === "eliminar"
+                    ? "btn-danger btn-admin-large"
+                    : "btn-primary btn-admin-large"
+                }
+                onClick={confirmarAccion}
+              >
+                {confirmacion.tipo === "eliminar" ? "Sí, eliminar" : "Sí, aprobar"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {editando && (
