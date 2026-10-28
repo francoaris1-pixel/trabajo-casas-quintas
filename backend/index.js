@@ -17,9 +17,8 @@ app.use(cors());
 app.use(express.json());
 
 // ---------- CONEXION MONGODB ----------
-const MONGODB_URI = process.env.MONGODB_URI || "mongodb://127.0.0.1:27017/quintas_goya";
 try {
-  await mongoose.connect(MONGODB_URI);
+  await mongoose.connect("mongodb+srv://francoaris72_db_user:vLb1LkTfZEy6dYGd@cluster0.l79b1bz.mongodb.net/quintas_goya?retryWrites=true&w=majority");
   console.log("¡Conexión exitosa a la base de datos unificada: quintas_goya!");
 } catch (error) {
   console.error("Error crítico al conectar a MongoDB:", error);
@@ -599,5 +598,3 @@ app.listen(PORT, () => {
 
 
 
-/ /   R e d e p l o y   t r i g g e r :   M o n g o D B   A t l a s   I P   a l l o w l i s t   a n d   e n v i r o n m e n t   v a r i a b l e s   s y n c .  
- 
