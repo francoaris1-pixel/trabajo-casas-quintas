@@ -39,7 +39,7 @@ function mapPropiedad(p) {
     ? "Centro"
     : direccion.toLowerCase().includes("norte")
     ? "Norte"
-    : "Sur";
+    : "Zona Sur";
   return {
     id: p._id,
     titulo,
@@ -162,7 +162,7 @@ export default function Home({ irALogin, usuario: usuarioProp }) {
             <option value="Todas">Zona</option>
             <option value="Norte">Zona Norte</option>
             <option value="Centro">Centro</option>
-            <option value="Sur">Zona Sur</option>
+            <option value="Zona Sur">Zona Sur</option>
           </select>
 
           <button className="mt-search-btn">Buscar</button>
@@ -285,3 +285,4 @@ export default function Home({ irALogin, usuario: usuarioProp }) {
 }
 
 
+// Force redeploy 2026-10-28
