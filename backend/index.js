@@ -1,4 +1,5 @@
-﻿import express from "express";
+﻿import 'dotenv/config';
+import express from "express";
 import cors from "cors";
 import mongoose from "mongoose";
 import {
@@ -16,8 +17,9 @@ app.use(cors());
 app.use(express.json());
 
 // ---------- CONEXION MONGODB ----------
+const MONGODB_URI = process.env.MONGODB_URI || "mongodb://127.0.0.1:27017/quintas_goya";
 try {
-  await mongoose.connect("mongodb://127.0.0.1:27017/quintas_goya");
+  await mongoose.connect(MONGODB_URI);
   console.log("¡Conexión exitosa a la base de datos unificada: quintas_goya!");
 } catch (error) {
   console.error("Error crítico al conectar a MongoDB:", error);
