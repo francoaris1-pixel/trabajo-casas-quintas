@@ -128,7 +128,7 @@ export default function Home({ irALogin, usuario: usuarioProp }) {
       </div>
 
       <section className="mt-filterbar">
-        <div className="mt-filter-title">Goya Recibe en alquiler</div>
+        <div className="mt-filter-title">Esta es una plataforma de reserva de alquileres casa y quintas solo para el turismo local</div>
 
         <div className="mt-quick-filters">
           {QUICK_FILTERS.map((f) => (
