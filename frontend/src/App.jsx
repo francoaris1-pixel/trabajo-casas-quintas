@@ -135,7 +135,7 @@ export default function App() {
         </div>
       </nav>
 
-      {vista === "home" && <Home irALogin={() => setVista("login")} />}
+      {vista === "home" && <Home irALogin={() => setVista("login")} usuario={usuario} />}
       {vista === "login" && <Login onLogin={handleLogin} />}
       {vista === "registro" && (
         <Registro onRegistro={handleLogin} irALogin={() => setVista("login")} />

@@ -57,7 +57,20 @@ function mapPropiedad(p) {
   };
 }
 
-export default function Home({ irALogin }) {
+export default function Home({ irALogin, usuario: usuarioProp }) {
+  const [usuario, setUsuario] = useState(() => {
+    if (usuarioProp !== undefined) return usuarioProp;
+    try {
+      const saved = localStorage.getItem("user");
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [propiedadDetalle, setPropiedadDetalle] = useState(null);
+  useEffect(() => {
+    if (usuarioProp !== undefined) setUsuario(usuarioProp);
+  }, [usuarioProp]);
   const [propiedades, setPropiedades] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState("");
@@ -106,6 +119,7 @@ export default function Home({ irALogin }) {
   });
 
   return (
+    <>
     <div className="mitula-home">
       <div className="mt-topbar">
         <div className="mt-brand">
@@ -233,7 +247,7 @@ export default function Home({ irALogin }) {
                   <p className="mt-card-location">Estado: {p.estado}</p>
                 )}
 
-                <button className="mt-card-cta" onClick={irALogin}>
+                <button className="mt-card-cta" onClick={() => (usuario ? setPropiedadDetalle(p) : irALogin())}>
                   Ver detalles
                 </button>
               </div>
@@ -242,6 +256,31 @@ export default function Home({ irALogin }) {
         </section>
       )}
     </div>
+
+      {propiedadDetalle && (
+        <div className="modal-overlay" onClick={() => setPropiedadDetalle(null)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <h3>{propiedadDetalle.titulo}</h3>
+            <p>{propiedadDetalle.ubicacion}</p>
+            <p>{fmt(propiedadDetalle.precio)} / noche</p>
+            <p>{propiedadDetalle.specs.join(" • ")}</p>
+            {propiedadDetalle.imagen && (
+              <img
+                src={propiedadDetalle.imagen}
+                alt={propiedadDetalle.titulo}
+                style={{ maxWidth: "100%", borderRadius: "8px", marginTop: "8px" }}
+                onError={(e) => e.currentTarget.classList.add("hidden")}
+              />
+            )}
+            <div className="modal-actions" style={{ marginTop: "12px" }}>
+              <button className="btn-secondary" onClick={() => setPropiedadDetalle(null)}>
+                Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
