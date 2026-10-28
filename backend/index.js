@@ -18,7 +18,7 @@ app.use(express.json());
 
 // ---------- CONEXION MONGODB ----------
 try {
-  await mongoose.connect("mongodb+srv://goyaadmin:goya1234@cluster0.l79b1bz.mongodb.net/quintas_goya?retryWrites=true&w=majority");
+  await mongoose.connect("mongodb+srv://francoaris72_db_user:vLb1LkTfZEy6dYGd@cluster0.l79b1bz.mongodb.net/quintas_goya?retryWrites=true&w=majority");
   console.log("¡Conexión exitosa a la base de datos unificada: quintas_goya!");
 } catch (error) {
   console.error("Error crítico al conectar a MongoDB:", error);
@@ -591,6 +591,7 @@ const PORT = 4000;
 app.listen(PORT, () => {
   console.log(`Servidor backend escuchando en http://localhost:${PORT}`);
 });
+
 
 
 
