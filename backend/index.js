@@ -1,603 +1,658 @@
-﻿import 'dotenv/config';
-import express from "express";
+import "dotenv/config";
+import { pathToFileURL } from "node:url";
 import cors from "cors";
+import express from "express";
 import mongoose from "mongoose";
 import {
-  Usuario,
-  Propiedad,
-  Reserva,
-  Pago,
+  authenticate,
+  createToken,
+  hashPassword,
+  publicUser,
+  requireRole,
+  verifyPassword,
+} from "./auth.js";
+import {
   Foto,
   MetodoPago,
+  Pago,
+  Propiedad,
+  Reserva,
+  Usuario,
 } from "./models.js";
+import { ensureTestData } from "./seed-data.js";
 import { enviarMail, mailBienvenida, mailReserva } from "./mailer.js";
 
 const app = express();
-app.use(cors());
-app.use(express.json());
-
-// ---------- CONEXION MONGODB ----------
-try {
-  await mongoose.connect("mongodb+srv://francoaris72_db_user:goya12345@cluster0.l79b1bz.mongodb.net/quintas_goya?retryWrites=true&w=majority");
-  console.log("¡Conexión exitosa a la base de datos unificada: quintas_goya!");
-} catch (error) {
-  console.error("Error crítico al conectar a MongoDB:", error);
-  process.exit(1);
-}
-
-// Metodo de pago inicial (se crea una sola vez)
-if ((await MetodoPago.countDocuments()) === 0) {
-  await MetodoPago.create({
-    efectivo: true,
-    tarjetaDebito: true,
-    tarjetaCredito: true,
-    transferenciaBancaria: true,
-    billeteraVirtual: true,
-  });
-}
-
-// Seed automatico: si la base esta vacia crea datos de ejemplo
-if ((await Usuario.countDocuments()) === 0) {
-  await Usuario.create([
-    { nombre: "Administrador", correo: "admin@casas.com", contrasena: "admin123", rol: "anfitrion" },
-    { nombre: "Juan", apellido: "Perez", correo: "juan@casas.com", contrasena: "pass1", rol: "anfitrion", telefono: "2664567890" },
-    { nombre: "Maria", apellido: "Gomez", correo: "maria@casas.com", contrasena: "pass2", rol: "anfitrion", telefono: "2664567891" },
-  ]);
-  const juan = await Usuario.findOne({ correo: "juan@casas.com" });
-  const maria = await Usuario.findOne({ correo: "maria@casas.com" });
-  const propiedades = await Propiedad.insertMany([
-    {
-      propietario: juan._id,
-      titulo: "Quinta Los Lapachos",
-      descripcion: "Quinta con pileta, wifi y cochera para familias",
-      direccion: "Zona Norte, Goya, Corrientes",
-      maxHuespedes: 6,
-      precioPorNoche: 85000,
-      estado: "pending_review",
-    },
-    {
-      propietario: maria._id,
-      titulo: "Chalet Costa del Rio",
-      descripcion: "Chalet con pileta y cochera frente al rio",
-      direccion: "Camino a Puerto Boca, Goya, Corrientes",
-      maxHuespedes: 8,
-      precioPorNoche: 120000,
-      estado: "pending_review",
-    },
-    {
-      propietario: juan._id,
-      titulo: "Cabana del Monte",
-      descripcion: "Cabana con mascotas y wifi en zona rural",
-      direccion: "Zona rural norte, Goya, Corrientes",
-      maxHuespedes: 4,
-      precioPorNoche: 60000,
-      estado: "pending_review",
-    },
-  ]);
-  await Foto.insertMany([
-    {
-      propiedad: propiedades[0]._id,
-      archivo: "https://images.unsplash.com/photo-1600585154340-be6161a56a0c?w=800&q=80",
-      descripcion: "Frente de la quinta",
-    },
-    {
-      propiedad: propiedades[1]._id,
-      archivo: "https://images.unsplash.com/photo-1512917774080-9991f1c4c750?w=800&q=80",
-      descripcion: "Vista del chalet",
-    },
-    {
-      propiedad: propiedades[2]._id,
-      archivo: "https://imagen-rota-ejemplo.com/cabana-del-monte.jpg",
-      descripcion: "Imagen no disponible",
-    },
-  ]);
-  console.log("Seed: usuarios y propiedades de ejemplo creados");
-}
-
-// ---------- LOGIN ----------
-app.post("/api/login", async (req, res) => {
-  const { correo, contrasena } = req.body;
-
-  const user = await Usuario.findOne({ correo, contrasena });
-  if (!user) {
-    return res.status(401).json({ error: "Correo o contrasena incorrectos" });
-  }
-
-  res.json({
-    mensaje: `Bienvenido ${user.nombre}`,
-    usuario: {
-      _id: user._id,
-      id: user._id,
-      nombre: user.nombre,
-      apellido: user.apellido,
-      correo: user.correo,
-      telefono: user.telefono,
-      rol: user.rol,
-    },
-  });
-});
-
-// ---------- REGISTRO ----------
-// Los nuevos registros son clientes: solo pueden hacer reservas
-app.post("/api/registro", async (req, res) => {
-  const { nombre, apellido, correo, contrasena, telefono } = req.body;
-
-  if (!nombre || !correo || !contrasena) {
-    return res.status(400).json({ error: "Faltan datos del registro" });
-  }
-
-  if (await Usuario.findOne({ correo })) {
-    return res.status(409).json({ error: "Ese correo ya esta registrado" });
-  }
-
-  const nuevo = await Usuario.create({
-    nombre,
-    apellido: apellido || "",
-    correo,
-    contrasena,
-    telefono: telefono || "",
-    rol: "inquilino",
-  });
-
-  res.status(201).json({
-    mensaje: `Cuenta creada. Bienvenido ${nuevo.nombre}`,
-    usuario: {
-      id: nuevo._id,
-      nombre: nuevo.nombre,
-      apellido: nuevo.apellido,
-      correo: nuevo.correo,
-      telefono: nuevo.telefono,
-      rol: nuevo.rol,
-    },
-  });
-
-  // Mail de bienvenida (no bloquea la respuesta)
-  const mail = mailBienvenida(nuevo);
-  enviarMail(mail.para, mail.asunto, mail.html).catch(() => {});
-});
-
-// ---------- PROPIEDADES ----------
-app.get("/api/propiedades", async (req, res) => {
-  const propiedades = await Propiedad.find().populate(
-    "propietario",
-    "nombre apellido correo"
-  );
-  const conFoto = await Promise.all(
-    propiedades.map(async (p) => {
-      const foto = await Foto.findOne({ propiedad: p._id }).sort({ _id: -1 });
-      return { ...p.toObject(), foto: foto?.archivo || null };
+const asyncRoute = (handler) => (req, res, next) =>
+  Promise.resolve(handler(req, res, next)).catch(next);
+const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const paymentMethods = new Set([
+  "efectivo",
+  "tarjeta_debito",
+  "tarjeta_credito",
+  "transferencia_bancaria",
+  "billetera_virtual",
+]);
+const parseDateOnly = (value) => {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value
+    ? null
+    : date;
+};
+const todayInGoya = () => {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en", {
+      timeZone: "America/Argentina/Cordoba",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
     })
+      .formatToParts(new Date())
+      .map(({ type, value }) => [type, value])
   );
-  res.json(conFoto);
-});
+  return `${parts.year}-${parts.month}-${parts.day}`;
+};
 
-// ---------- PROPIEDADES DE UN PROPIETARIO ----------
-app.get("/api/propiedades/propietario/:idUsuario", async (req, res) => {
-  try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.idUsuario)) {
-      return res.status(400).json({ error: "ID de usuario invalido" });
+app.use(
+  cors({
+    origin:
+      process.env.CORS_ORIGIN ||
+      (process.env.NODE_ENV === "production" ? false : true),
+  })
+);
+app.use(express.json({ limit: "1mb" }));
+
+let databaseReady;
+const ensureDatabase = () => {
+  if (!databaseReady) {
+    if (
+      process.env.NODE_ENV === "production" &&
+      (!process.env.JWT_SECRET ||
+        process.env.JWT_SECRET.length < 32 ||
+        process.env.JWT_SECRET.startsWith("replace-"))
+    ) {
+      return Promise.reject(
+        new Error("Configura JWT_SECRET con al menos 32 caracteres aleatorios")
+      );
     }
-    const propiedades = await Propiedad.find({ propietario: req.params.idUsuario }).populate(
-      "propietario",
-      "nombre apellido correo"
-    );
-    res.json(propiedades);
-  } catch (error) {
-    console.error("Error al obtener propiedades del propietario:", error);
-    res.status(500).json({ error: "No se pudieron obtener las propiedades" });
-  }
-});
-
-// ---------- RESERVAS DE UN PROPIETARIO ----------
-app.get("/api/reservas/propietario/:idUsuario", async (req, res) => {
-  try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.idUsuario)) {
-      return res.status(400).json({ error: "ID de usuario invalido" });
+    const mongoUri =
+      process.env.MONGODB_URI ||
+      (process.env.NODE_ENV === "production"
+        ? ""
+        : "mongodb://127.0.0.1:27017/goya_quintas_test");
+    if (!mongoUri) {
+      return Promise.reject(new Error("MONGODB_URI es obligatorio en produccion"));
     }
-    const propiedades = await Propiedad.find({ propietario: req.params.idUsuario }).select("_id");
-    const ids = propiedades.map((p) => p._id);
-    const reservas = await Reserva.find({ propiedad: { $in: ids } })
-      .populate("propiedad", "titulo precioPorNoche")
-      .populate("turista", "nombre apellido telefono")
-      .sort({ fechaCreacion: -1 });
-    res.json(
-      reservas.map((r) => ({
-        id: r._id,
-        propiedadId: r.propiedad?._id || r.propiedad,
-        propiedadTitulo: r.propiedad?.titulo || "Propiedad",
-        checkIn: r.fechaInicio,
-        checkOut: r.fechaFin,
-        montoTotal: r.montoTotal,
-        estado: r.estado,
-        turista: r.turista,
-      }))
-    );
-  } catch (error) {
-    console.error("Error al obtener reservas del propietario:", error);
-    res.status(500).json({ error: "No se pudieron obtener las reservas" });
+    databaseReady = mongoose
+      .connect(mongoUri)
+      .then(() => ensureTestData())
+      .catch((error) => {
+        databaseReady = null;
+        throw error;
+      });
   }
+  return databaseReady;
+};
+
+app.use((req, res, next) => {
+  ensureDatabase().then(() => next()).catch(next);
 });
 
-// Detalle de una propiedad con sus fotos
-app.get("/api/propiedades/:id", async (req, res) => {
-  const prop = await Propiedad.findById(req.params.id).populate(
-    "propietario",
-    "nombre apellido correo telefono"
-  );
-  if (!prop) return res.status(404).json({ error: "Propiedad no encontrada" });
-  res.json(prop);
-});
+app.get(
+  "/api/health",
+  asyncRoute(async (_req, res) => {
+    res.json({ ok: true });
+  })
+);
 
-// ---------- RESERVAS ----------
-// Reservas de una propiedad (para el calendario)
-app.get("/api/reservas/:propiedadId", async (req, res) => {
-  try {
+app.post(
+  "/api/login",
+  asyncRoute(async (req, res) => {
+    const correo = String(req.body.correo || "").trim().toLowerCase();
+    const contrasena = String(req.body.contrasena || "");
+    if (!validEmail.test(correo) || !contrasena) {
+      return res.status(400).json({ error: "Correo y contrasena son obligatorios" });
+    }
+
+    const user = await Usuario.findOne({ correo }).select("+contrasena");
+    if (!user || !(await verifyPassword(contrasena, user.contrasena))) {
+      return res.status(401).json({ error: "Correo o contrasena incorrectos" });
+    }
+    res.json({
+      mensaje: `Bienvenido ${user.nombre}`,
+      usuario: publicUser(user),
+      token: createToken(user._id),
+    });
+  })
+);
+
+app.post(
+  "/api/registro",
+  asyncRoute(async (req, res) => {
+    const nombre = String(req.body.nombre || "").trim();
+    const apellido = String(req.body.apellido || "").trim();
+    const correo = String(req.body.correo || "").trim().toLowerCase();
+    const contrasena = String(req.body.contrasena || "");
+    const telefono = String(req.body.telefono || "").trim();
+    if (!nombre || !validEmail.test(correo) || contrasena.length < 8) {
+      return res.status(400).json({
+        error: "Ingresa nombre, correo valido y contrasena de al menos 8 caracteres",
+      });
+    }
+    if (await Usuario.exists({ correo })) {
+      return res.status(409).json({ error: "Ese correo ya esta registrado" });
+    }
+
+    const user = await Usuario.create({
+      nombre,
+      apellido,
+      correo,
+      contrasena: await hashPassword(contrasena),
+      telefono,
+      rol: "inquilino",
+    });
+    res.status(201).json({
+      mensaje: `Cuenta creada. Bienvenido ${user.nombre}`,
+      usuario: publicUser(user),
+      token: createToken(user._id),
+    });
+    const mail = mailBienvenida(user);
+    void enviarMail(mail.para, mail.asunto, mail.html).catch((error) =>
+      console.error("No se pudo enviar el mail de bienvenida:", error.message)
+    );
+  })
+);
+
+app.get(
+  "/api/auth/me",
+  authenticate,
+  asyncRoute(async (req, res) => {
+    res.json({ usuario: publicUser(req.user) });
+  })
+);
+
+app.get(
+  "/api/propiedades",
+  asyncRoute(async (_req, res) => {
+    const properties = await Propiedad.find({ estado: "disponible" })
+      .populate("propietario", "nombre apellido")
+      .sort({ _id: -1 })
+      .lean();
+    const withPhotos = await Promise.all(
+      properties.map(async (property) => {
+        const photo = await Foto.findOne({ propiedad: property._id })
+          .sort({ _id: -1 })
+          .lean();
+        return { ...property, foto: photo?.archivo || null };
+      })
+    );
+    res.json(withPhotos);
+  })
+);
+
+app.get(
+  "/api/propiedades/:id",
+  asyncRoute(async (req, res) => {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: "ID de propiedad invalido" });
+    }
+    const property = await Propiedad.findOne({
+      _id: req.params.id,
+      estado: "disponible",
+    })
+      .populate("propietario", "nombre apellido")
+      .lean();
+    if (!property) {
+      return res.status(404).json({ error: "Propiedad no encontrada" });
+    }
+    const photos = await Foto.find({ propiedad: property._id }).lean();
+    res.json({ ...property, fotos: photos });
+  })
+);
+
+app.get(
+  "/api/propiedades/:propiedadId/reservas",
+  asyncRoute(async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(req.params.propiedadId)) {
       return res.status(400).json({ error: "ID de propiedad invalido" });
     }
-    const reservas = await Reserva.find({
+    const reservations = await Reserva.find({
       propiedad: req.params.propiedadId,
       estado: { $ne: "cancelada" },
-    }).populate("turista", "nombre apellido");
+    }).select("fechaInicio fechaFin estado");
     res.json(
-      reservas.map((r) => ({
-        id: r._id,
-        propiedadId: r.propiedad,
-        checkIn: r.fechaInicio,
-        checkOut: r.fechaFin,
-        estado: r.estado,
+      reservations.map((reservation) => ({
+        id: reservation._id,
+        checkIn: reservation.fechaInicio,
+        checkOut: reservation.fechaFin,
+        estado: reservation.estado,
       }))
     );
-  } catch (error) {
-    console.error("Error al obtener reservas de la propiedad:", error);
-    res.status(500).json({ error: "No se pudieron obtener las reservas" });
-  }
-});
-
-// Crear reserva (valida solapamiento y calcula el monto total)
-app.post("/api/reservas", async (req, res) => {
-  const { propiedadId, checkIn, checkOut, datosTurista, metodoPago } = req.body;
-
-  if (!propiedadId || !checkIn || !checkOut) {
-    return res.status(400).json({ error: "Faltan datos de la reserva" });
-  }
-  if (new Date(checkIn) >= new Date(checkOut)) {
-    return res.status(400).json({ error: "Las fechas son invalidas" });
-  }
-
-  const propiedad = await Propiedad.findById(propiedadId);
-  if (!propiedad)
-    return res.status(404).json({ error: "Propiedad no encontrada" });
-  if (!["disponible", "pending_review"].includes(propiedad.estado)) {
-    return res.status(409).json({ error: "La propiedad no esta disponible" });
-  }
-
-  // No permitir reservas que se superpongan con otras activas
-  const superpuesta = await Reserva.findOne({
-    propiedad: propiedadId,
-    estado: { $ne: "cancelada" },
-    fechaInicio: { $lt: new Date(checkOut) },
-    fechaFin: { $gt: new Date(checkIn) },
-  });
-  if (superpuesta) {
-    return res
-      .status(409)
-      .json({ error: "Esas fechas ya estan reservadas. Elegi otras fechas." });
-  }
-
-  // Turista: si hay usuario logueado se usa su id; si no, se crea/usa uno por correo
-  let turistaId = req.body.turistaId;
-  if (!turistaId) {
-    const { nombre, correo } = datosTurista || {};
-    if (!nombre || !correo) {
-      return res
-        .status(400)
-        .json({ error: "Faltan datos del turista (nombre y correo)" });
-    }
-    let u = await Usuario.findOne({ correo });
-    if (!u) {
-      u = await Usuario.create({
-        nombre,
-        correo,
-        contrasena: "sin-password",
-        rol: "inquilino",
-      });
-    }
-    turistaId = u._id;
-  }
-
-  const noches = Math.round((new Date(checkOut) - new Date(checkIn)) / 86400000);
-  const reserva = await Reserva.create({
-    propiedad: propiedadId,
-    turista: turistaId,
-    fechaInicio: checkIn,
-    fechaFin: checkOut,
-    montoTotal: noches * propiedad.precioPorNoche,
-    estado: "confirmada",
-  });
-
-  // Registra el pago de la reserva
-  const pago = await Pago.create({
-    reserva: reserva._id,
-    montoPagado: reserva.montoTotal,
-    metodoPago: metodoPago || "efectivo",
-    estado: "pagado",
-  });
-
-  res.status(201).json({
-    mensaje: "Reserva registrada",
-    reserva,
-    pago: { id: pago._id, monto: pago.montoPagado, metodoPago: pago.metodoPago, estado: pago.estado },
-  });
-
-  // Mail de confirmacion con los datos y el pago (no bloquea la respuesta)
-  const turista = await Usuario.findById(turistaId);
-  if (turista) {
-    const mail = mailReserva({ usuario: turista, propiedad, reserva });
-    enviarMail(mail.para, mail.asunto, mail.html).catch(() => {});
-  }
-});
-
-// ---------- PROPIETARIO ----------
-// Middleware simple: verifica usuario propietario
-async function authPropietario(req, res, next) {
-  const usuario = await Usuario.findById(req.headers["x-usuario-id"]);
-  if (!usuario || usuario.rol !== "anfitrion") {
-    return res.status(403).json({ error: "Solo anfitriones" });
-  }
-  req.usuario = usuario;
-  next();
-}
-
-// Panel propio: sus propiedades + reservas + estadisticas
-app.get("/api/propietario/panel", authPropietario, async (req, res) => {
-  const susPropiedades = await Propiedad.find({ propietario: req.usuario._id });
-  const ids = susPropiedades.map((p) => p._id);
-  const susReservas = await Reserva.find({
-    propiedad: { $in: ids },
   })
-    .populate("propiedad", "titulo precioPorNoche")
-    .populate("turista", "nombre apellido telefono");
+);
 
-  const estadisticas = susPropiedades.map((p) => {
-    const rs = susReservas.filter(
-      (r) => String(r.propiedad?._id) === String(p._id)
+app.post(
+  "/api/reservas",
+  authenticate,
+  requireRole("inquilino"),
+  asyncRoute(async (req, res) => {
+    const { propiedadId, checkIn, checkOut, metodoPago = "efectivo" } = req.body;
+    if (
+      !mongoose.Types.ObjectId.isValid(propiedadId) ||
+      !checkIn ||
+      !checkOut ||
+      !paymentMethods.has(metodoPago)
+    ) {
+      return res.status(400).json({ error: "Los datos de la reserva son invalidos" });
+    }
+    const start = parseDateOnly(checkIn);
+    const end = parseDateOnly(checkOut);
+    if (!start || !end || checkIn < todayInGoya() || checkOut <= checkIn) {
+      return res.status(400).json({ error: "Las fechas de la reserva son invalidas" });
+    }
+
+    const property = await Propiedad.findOne({
+      _id: propiedadId,
+      estado: "disponible",
+    });
+    if (!property) {
+      return res.status(404).json({ error: "Propiedad no disponible" });
+    }
+    const overlap = await Reserva.exists({
+      propiedad: property._id,
+      estado: { $ne: "cancelada" },
+      fechaInicio: { $lt: end },
+      fechaFin: { $gt: start },
+    });
+    if (overlap) {
+      return res.status(409).json({ error: "Esas fechas ya estan reservadas" });
+    }
+
+    const nights = Math.round((end - start) / 86400000);
+    const reservation = await Reserva.create({
+      propiedad: property._id,
+      turista: req.user._id,
+      fechaInicio: start,
+      fechaFin: end,
+      montoTotal: nights * property.precioPorNoche,
+      estado: "pendiente",
+    });
+    let payment;
+    try {
+      payment = await Pago.create({
+        reserva: reservation._id,
+        montoPagado: reservation.montoTotal,
+        metodoPago,
+        estado: "pendiente",
+      });
+    } catch (error) {
+      await Reserva.findByIdAndDelete(reservation._id);
+      throw error;
+    }
+
+    res.status(201).json({
+      mensaje: "Solicitud de reserva registrada. El pago queda pendiente de confirmacion.",
+      reserva: {
+        id: reservation._id,
+        propiedadId: property._id,
+        propiedadTitulo: property.titulo,
+        checkIn: reservation.fechaInicio,
+        checkOut: reservation.fechaFin,
+        montoTotal: reservation.montoTotal,
+        estado: reservation.estado,
+      },
+      pago: {
+        id: payment._id,
+        monto: payment.montoPagado,
+        metodoPago: payment.metodoPago,
+        estado: payment.estado,
+      },
+    });
+    const mail = mailReserva({
+      usuario: req.user,
+      propiedad: property,
+      reserva: reservation,
+      metodoPago,
+    });
+    void enviarMail(mail.para, mail.asunto, mail.html).catch((error) =>
+      console.error("No se pudo enviar el mail de reserva:", error.message)
     );
-    const noches = rs.reduce(
-      (t, r) =>
-        t + Math.max(1, Math.round((r.fechaFin - r.fechaInicio) / 86400000)),
-      0
+  })
+);
+
+app.get(
+  "/api/reservas/mis",
+  authenticate,
+  requireRole("inquilino"),
+  asyncRoute(async (req, res) => {
+    const reservations = await Reserva.find({ turista: req.user._id })
+      .populate("propiedad", "titulo")
+      .sort({ fechaCreacion: -1 })
+      .lean();
+    res.json(
+      reservations.map((reservation) => ({
+        id: reservation._id,
+        propiedadId: reservation.propiedad?._id,
+        propiedadTitulo: reservation.propiedad?.titulo || "Propiedad",
+        checkIn: reservation.fechaInicio,
+        checkOut: reservation.fechaFin,
+        montoTotal: reservation.montoTotal,
+        estado: reservation.estado,
+      }))
     );
-    return {
-      propiedadId: p._id,
-      titulo: p.titulo,
-      precioPorNoche: p.precioPorNoche,
-      reservas: rs.length,
-      noches,
-      ingresos: noches * p.precioPorNoche,
-      comision: noches * p.precioPorNoche * 0.1,
-      liquidacion: noches * p.precioPorNoche * 0.9,
-    };
-  });
+  })
+);
 
-  res.json({
-    propiedades: susPropiedades,
-    reservas: susReservas,
-    estadisticas,
-  });
-});
-
-// El propietario edita SOLO sus propiedades
-app.put("/api/propietario/propiedades/:id", authPropietario, async (req, res) => {
-  const prop = await Propiedad.findOne({
-    _id: req.params.id,
-    propietario: req.usuario._id,
-  });
-  if (!prop) return res.status(404).json({ error: "Propiedad no encontrada" });
-
-  const { titulo, descripcion, direccion, maxHuespedes, precioPorNoche, estado } =
-    req.body;
-  if (titulo) prop.titulo = titulo;
-  if (descripcion) prop.descripcion = descripcion;
-  if (direccion) prop.direccion = direccion;
-  if (maxHuespedes) prop.maxHuespedes = Number(maxHuespedes);
-  if (estado) prop.estado = estado;
-  if (precioPorNoche !== undefined && precioPorNoche !== "") {
-    const precio = Number(precioPorNoche);
-    if (Number.isNaN(precio) || precio < 0) {
-      return res.status(400).json({ error: "Precio invalido" });
-    }
-    prop.precioPorNoche = precio;
-  }
-  await prop.save();
-
-  res.json({ mensaje: `Propiedad "${prop.titulo}" actualizada`, propiedad: prop });
-});
-
-// ---------- ADMIN ----------
-app.get("/api/admin/panel", async (req, res) => {
-  const [propiedades, reservas] = await Promise.all([
-    Propiedad.find().populate("propietario", "nombre apellido correo"),
-    Reserva.find().populate("propiedad", "titulo").populate("turista", "nombre apellido"),
-  ]);
-  res.json({ propiedades, reservas });
-});
-
-app.put("/api/admin/propiedades/:id", async (req, res) => {
-  const prop = await Propiedad.findById(req.params.id);
-  if (!prop) return res.status(404).json({ error: "Propiedad no encontrada" });
-
-  const { titulo, descripcion, direccion, maxHuespedes, precioPorNoche, estado } =
-    req.body;
-  if (titulo) prop.titulo = titulo;
-  if (descripcion) prop.descripcion = descripcion;
-  if (direccion) prop.direccion = direccion;
-  if (maxHuespedes) prop.maxHuespedes = Number(maxHuespedes);
-  if (estado) prop.estado = estado;
-  if (precioPorNoche !== undefined && precioPorNoche !== "") {
-    const precio = Number(precioPorNoche);
-    if (Number.isNaN(precio) || precio < 0) {
-      return res.status(400).json({ error: "Precio invalido" });
-    }
-    prop.precioPorNoche = precio;
-  }
-  await prop.save();
-
-  res.json({ mensaje: `Propiedad "${prop.titulo}" actualizada`, propiedad: prop });
-});
-
-app.post("/api/admin/propiedades", async (req, res) => {
-  const { titulo, descripcion, direccion, maxHuespedes, precioPorNoche, estado, propietarioId } =
-    req.body;
-
-  if (!titulo || precioPorNoche === undefined) {
-    return res.status(400).json({ error: "Faltan datos de la propiedad" });
-  }
-  const precio = Number(precioPorNoche);
-  if (Number.isNaN(precio) || precio < 0) {
-    return res.status(400).json({ error: "Precio invalido" });
-  }
-
-  // Si no indican propietario, se usa el primero con ese rol
-  let propId = propietarioId;
-  if (!propId) {
-    const p = await Usuario.findOne({ rol: "anfitrion" });
-    propId = p?._id;
-  }
-
-  const nueva = await Propiedad.create({
-    propietario: propId,
-    titulo,
-    descripcion: descripcion || "",
-    direccion: direccion || "",
-    maxHuespedes: maxHuespedes || 4,
-    precioPorNoche: precio,
-    estado: estado || "disponible",
-  });
-
-  res.status(201).json({ mensaje: `Propiedad "${titulo}" publicada`, propiedad: nueva });
-});
-
-app.delete("/api/admin/propiedades/:id", async (req, res) => {
-  const prop = await Propiedad.findByIdAndDelete(req.params.id);
-  if (!prop) return res.status(404).json({ error: "Propiedad no encontrada" });
-  res.json({ mensaje: `Propiedad "${prop.titulo}" eliminada` });
-});
-
-// ---------- SEED (datos de ejemplo) ----------
-app.post("/api/seed", async (req, res) => {
-  res.json({ mensaje: "El seed corre automatico al iniciar el servidor" });
-});
-
-// ---------- PROPIEDADES (creacion con control de rol) ----------
-app.post("/api/propiedades", async (req, res) => {
-  try {
-  const usuarioId = req.headers["x-usuario-id"] || req.body.usuarioId;
-  if (!usuarioId) return res.status(401).json({ error: "Falta identificacion de usuario" });
-  const usuario = await Usuario.findById(usuarioId);
-  if (!usuario) return res.status(404).json({ error: "Usuario no encontrado" });
-  if (usuario.rol !== "anfitrion") return res.status(403).json({ error: "No tenes permisos para publicar propiedades" });
-  const { titulo, descripcion, direccion, maxHuespedes, precioPorNoche, estado, foto } = req.body;
-  if (!titulo || precioPorNoche === undefined) return res.status(400).json({ error: "Faltan datos de la propiedad" });
-  const precio = Number(precioPorNoche);
-  if (Number.isNaN(precio) || precio < 0) return res.status(400).json({ error: "Precio invalido" });
-  const nueva = await Propiedad.create({
-    propietario: usuario._id,
-    titulo,
-    descripcion: descripcion || "",
-    direccion: direccion || "",
-    maxHuespedes: maxHuespedes || 4,
-    precioPorNoche: precio,
-    estado: estado || "pending_review",
-  });
-  if (foto) await Foto.create({ propiedad: nueva._id, archivo: foto, descripcion: "Foto principal" });
-  res.status(201).json({ mensaje: `Propiedad "${titulo}" publicada`, propiedad: nueva });
-  } catch (error) { console.error("Error al publicar la propiedad:", error); res.status(500).json({ error: "No se pudo publicar la propiedad" }); }
-});
-
-// ---------- RESERVAS POR TURISTA ----------
-app.get("/api/reservas/turista/:turistaId", async (req, res) => {
-  try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.turistaId)) {
-      return res.status(400).json({ error: "ID de usuario invalido" });
-    }
-    const reservas = await Reserva.find({ turista: req.params.turistaId }).populate("propiedad", "titulo direccion precioPorNoche").sort({ fechaCreacion: -1 });
-    res.json(reservas.map((r) => ({
-      id: r._id,
-      propiedadId: r.propiedad?._id || r.propiedad,
-      propiedadTitulo: r.propiedad?.titulo || "Propiedad",
-      checkIn: r.fechaInicio,
-      checkOut: r.fechaFin,
-      montoTotal: r.montoTotal,
-      estado: r.estado,
-    })));
-  } catch (error) {
-    console.error("Error al obtener reservas del turista:", error);
-    res.status(500).json({ error: "No se pudieron obtener las reservas" });
-  }
-});
-
-// ---------- CANCELAR RESERVA ----------
-app.put("/api/reservas/:id/cancelar", async (req, res) => {
-  try {
+app.put(
+  "/api/reservas/:id/cancelar",
+  authenticate,
+  requireRole("inquilino"),
+  asyncRoute(async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(400).json({ error: "ID de reserva invalido" });
     }
-    const { turistaId } = req.body;
-    if (!turistaId) return res.status(400).json({ error: "Falta identificacion de usuario" });
-    const reserva = await Reserva.findById(req.params.id);
-    if (!reserva) return res.status(404).json({ error: "Reserva no encontrada" });
-    if (String(reserva.turista) !== String(turistaId)) return res.status(403).json({ error: "No podes cancelar una reserva de otro usuario" });
-    if (reserva.estado === "cancelada") return res.status(409).json({ error: "La reserva ya esta cancelada" });
-    reserva.estado = "cancelada";
-    await reserva.save();
-    res.json({ mensaje: "Reserva cancelada correctamente", reserva });
-  } catch (error) {
-    console.error("Error al cancelar la reserva:", error);
-    res.status(500).json({ error: "No se pudo cancelar la reserva" });
+    const reservation = await Reserva.findOneAndUpdate(
+      {
+        _id: req.params.id,
+        turista: req.user._id,
+        estado: { $ne: "cancelada" },
+      },
+      { $set: { estado: "cancelada" } },
+      { new: true }
+    );
+    if (!reservation) {
+      const exists = await Reserva.exists({ _id: req.params.id });
+      return res
+        .status(exists ? 403 : 404)
+        .json({ error: exists ? "No podes cancelar una reserva ajena o ya cancelada" : "Reserva no encontrada" });
+    }
+    await Pago.updateMany({ reserva: reservation._id }, { $set: { estado: "cancelado" } });
+    res.json({ mensaje: "Reserva cancelada correctamente" });
+  })
+);
+
+app.get(
+  "/api/propietario/panel",
+  authenticate,
+  requireRole("anfitrion"),
+  asyncRoute(async (req, res) => {
+    const properties = await Propiedad.find({ propietario: req.user._id }).lean();
+    const propertyIds = properties.map((property) => property._id);
+    const reservations = await Reserva.find({
+      propiedad: { $in: propertyIds },
+      estado: { $ne: "cancelada" },
+    })
+      .populate("propiedad", "titulo precioPorNoche")
+      .populate("turista", "nombre apellido telefono")
+      .sort({ fechaCreacion: -1 })
+      .lean();
+    const stats = properties.map((property) => {
+      const relevant = reservations.filter(
+        (reservation) =>
+          String(reservation.propiedad?._id) === String(property._id)
+      );
+      const nights = relevant.reduce(
+        (total, reservation) =>
+          total + Math.max(0, Math.round((reservation.fechaFin - reservation.fechaInicio) / 86400000)),
+        0
+      );
+      const gross = nights * property.precioPorNoche;
+      return {
+        propiedadId: property._id,
+        titulo: property.titulo,
+        precioPorNoche: property.precioPorNoche,
+        reservas: relevant.length,
+        noches: nights,
+        ingresos: gross,
+        liquidacion: gross * 0.9,
+      };
+    });
+    res.json({
+      propiedades: properties,
+      reservas: reservations.map((reservation) => ({
+        id: reservation._id,
+        propiedadId: reservation.propiedad?._id,
+        propiedadTitulo: reservation.propiedad?.titulo,
+        checkIn: reservation.fechaInicio,
+        checkOut: reservation.fechaFin,
+        estado: reservation.estado,
+        turista: reservation.turista,
+      })),
+      estadisticas: stats,
+    });
+  })
+);
+
+app.post(
+  "/api/propiedades",
+  authenticate,
+  requireRole("anfitrion"),
+  asyncRoute(async (req, res) => {
+    const { titulo, descripcion, direccion, maxHuespedes, precioPorNoche, foto } =
+      req.body;
+    const price = Number(precioPorNoche);
+    const guests = Number(maxHuespedes || 4);
+    if (!String(titulo || "").trim() || !Number.isFinite(price) || price < 0 ||
+        !Number.isInteger(guests) || guests < 1) {
+      return res.status(400).json({ error: "Los datos de la propiedad son invalidos" });
+    }
+    const property = await Propiedad.create({
+      propietario: req.user._id,
+      titulo: String(titulo).trim(),
+      descripcion: String(descripcion || "").trim(),
+      direccion: String(direccion || "").trim(),
+      maxHuespedes: guests,
+      precioPorNoche: price,
+      estado: "pending_review",
+    });
+    if (foto) {
+      await Foto.create({
+        propiedad: property._id,
+        archivo: String(foto),
+        descripcion: "Foto principal",
+      });
+    }
+    res.status(201).json({ mensaje: "Propiedad enviada a revision", propiedad: property });
+  })
+);
+
+app.put(
+  "/api/propietario/propiedades/:id",
+  authenticate,
+  requireRole("anfitrion"),
+  asyncRoute(async (req, res) => {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: "ID de propiedad invalido" });
+    }
+    const property = await Propiedad.findOne({
+      _id: req.params.id,
+      propietario: req.user._id,
+    });
+    if (!property) return res.status(404).json({ error: "Propiedad no encontrada" });
+    const { titulo, descripcion, direccion, maxHuespedes, precioPorNoche } = req.body;
+    if (titulo !== undefined) property.titulo = String(titulo).trim();
+    if (descripcion !== undefined) property.descripcion = String(descripcion).trim();
+    if (direccion !== undefined) property.direccion = String(direccion).trim();
+    if (maxHuespedes !== undefined) {
+      const guests = Number(maxHuespedes);
+      if (!Number.isInteger(guests) || guests < 1) {
+        return res.status(400).json({ error: "Cantidad de huespedes invalida" });
+      }
+      property.maxHuespedes = guests;
+    }
+    if (precioPorNoche !== undefined) {
+      const price = Number(precioPorNoche);
+      if (!Number.isFinite(price) || price < 0) {
+        return res.status(400).json({ error: "Precio invalido" });
+      }
+      property.precioPorNoche = price;
+    }
+    await property.save();
+    res.json({ mensaje: "Propiedad actualizada", propiedad: property });
+  })
+);
+
+app.delete(
+  "/api/propietario/propiedades/:id",
+  authenticate,
+  requireRole("anfitrion"),
+  asyncRoute(async (req, res) => {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: "ID de propiedad invalido" });
+    }
+    const property = await Propiedad.findOne({
+      _id: req.params.id,
+      propietario: req.user._id,
+    });
+    if (!property) return res.status(404).json({ error: "Propiedad no encontrada" });
+    if (await Reserva.exists({ propiedad: property._id, estado: { $ne: "cancelada" } })) {
+      return res.status(409).json({ error: "No se puede eliminar una propiedad con reservas activas" });
+    }
+    await Promise.all([
+      Foto.deleteMany({ propiedad: property._id }),
+      property.deleteOne(),
+    ]);
+    res.json({ mensaje: "Propiedad eliminada" });
+  })
+);
+
+app.get(
+  "/api/admin/panel",
+  authenticate,
+  requireRole("admin"),
+  asyncRoute(async (_req, res) => {
+    const [properties, reservations] = await Promise.all([
+      Propiedad.find()
+        .populate("propietario", "nombre apellido correo telefono")
+        .sort({ _id: -1 })
+        .lean(),
+      Reserva.find()
+        .populate("propiedad", "titulo")
+        .populate("turista", "nombre apellido")
+        .sort({ fechaCreacion: -1 })
+        .lean(),
+    ]);
+    const withPhotos = await Promise.all(
+      properties.map(async (property) => {
+        const photo = await Foto.findOne({ propiedad: property._id }).lean();
+        return { ...property, foto: photo?.archivo || null };
+      })
+    );
+    res.json({ propiedades: withPhotos, reservas: reservations });
+  })
+);
+
+app.get(
+  "/api/admin/propietarios",
+  authenticate,
+  requireRole("admin"),
+  asyncRoute(async (_req, res) => {
+    const owners = await Usuario.find({ rol: "anfitrion" })
+      .select("nombre apellido correo telefono")
+      .lean();
+    const counts = await Propiedad.aggregate([
+      { $group: { _id: "$propietario", count: { $sum: 1 } } },
+    ]);
+    const countByOwner = new Map(counts.map((item) => [String(item._id), item.count]));
+    res.json(
+      owners.map((owner) => ({
+        ...owner,
+        propiedades: countByOwner.get(String(owner._id)) || 0,
+      }))
+    );
+  })
+);
+
+app.put(
+  "/api/admin/propiedades/:id",
+  authenticate,
+  requireRole("admin"),
+  asyncRoute(async (req, res) => {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: "ID de propiedad invalido" });
+    }
+    const property = await Propiedad.findById(req.params.id);
+    if (!property) return res.status(404).json({ error: "Propiedad no encontrada" });
+    const { titulo, descripcion, direccion, maxHuespedes, precioPorNoche, estado } =
+      req.body;
+    if (titulo !== undefined) property.titulo = String(titulo).trim();
+    if (descripcion !== undefined) property.descripcion = String(descripcion).trim();
+    if (direccion !== undefined) property.direccion = String(direccion).trim();
+    if (maxHuespedes !== undefined) {
+      const guests = Number(maxHuespedes);
+      if (!Number.isInteger(guests) || guests < 1) {
+        return res.status(400).json({ error: "Cantidad de huespedes invalida" });
+      }
+      property.maxHuespedes = guests;
+    }
+    if (precioPorNoche !== undefined) {
+      const price = Number(precioPorNoche);
+      if (!Number.isFinite(price) || price < 0) {
+        return res.status(400).json({ error: "Precio invalido" });
+      }
+      property.precioPorNoche = price;
+    }
+    if (estado !== undefined) {
+      if (!["pending_review", "disponible", "suspendida"].includes(estado)) {
+        return res.status(400).json({ error: "Estado de propiedad invalido" });
+      }
+      property.estado = estado;
+    }
+    await property.save();
+    res.json({ mensaje: "Propiedad actualizada", propiedad: property });
+  })
+);
+
+app.delete(
+  "/api/admin/propiedades/:id",
+  authenticate,
+  requireRole("admin"),
+  asyncRoute(async (req, res) => {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: "ID de propiedad invalido" });
+    }
+    const property = await Propiedad.findById(req.params.id);
+    if (!property) return res.status(404).json({ error: "Propiedad no encontrada" });
+    if (await Reserva.exists({ propiedad: property._id, estado: { $ne: "cancelada" } })) {
+      return res.status(409).json({ error: "No se puede eliminar una propiedad con reservas activas" });
+    }
+    await Promise.all([
+      Foto.deleteMany({ propiedad: property._id }),
+      property.deleteOne(),
+    ]);
+    res.json({ mensaje: "Propiedad eliminada" });
+  })
+);
+
+app.use((error, _req, res, _next) => {
+  console.error("Error en el API:", error);
+  if (error?.type === "entity.parse.failed") {
+    return res.status(400).json({ error: "El cuerpo de la solicitud no es JSON valido" });
   }
-});
-
-// ---------- ADMINISTRACION ----------
-app.get("/api/admin/propietarios", async (req, res) => {
-  try {
-    const anfitriones = await Usuario.find({ rol: "anfitrion" }).select("nombre apellido correo telefono");
-    const conteos = await Propiedad.aggregate([{ $group: { _id: "$propietario", count: { $sum: 1 } } }]);
-    const mapa = new Map(conteos.map((c) => [String(c._id), c.count]));
-    res.json(anfitriones.map((u) => ({
-      _id: u._id,
-      nombre: u.nombre,
-      apellido: u.apellido,
-      correo: u.correo,
-      telefono: u.telefono,
-      propiedades: mapa.get(String(u._id)) || 0,
-    })));
-  } catch (error) {
-    console.error("Error al obtener propietarios:", error);
-    res.status(500).json({ error: "No se pudieron obtener los propietarios" });
+  if (error?.code === 11000) {
+    return res.status(409).json({ error: "El correo ya esta registrado" });
   }
-});
-
-app.get("/api/admin/propiedades", async (req, res) => {
-  try {
-    const propiedades = await Propiedad.find().populate("propietario", "nombre apellido correo telefono").sort({ createdAt: -1 });
-    res.json(propiedades);
-  } catch (error) {
-    console.error("Error al obtener propiedades (admin):", error);
-    res.status(500).json({ error: "No se pudieron obtener las propiedades" });
+  if (error instanceof mongoose.Error.ValidationError || error instanceof mongoose.Error.CastError) {
+    return res.status(400).json({ error: "Los datos enviados no son validos" });
   }
-});
-const PORT = 4000;
-app.listen(PORT, () => {
-  console.log(`Servidor backend escuchando en http://localhost:${PORT}`);
+  res.status(500).json({ error: "Error interno del servidor" });
 });
 
+export default app;
 
+const startServer = async () => {
+  await ensureDatabase();
+  console.log("Conectado a la base de prueba configurada");
+  const port = Number(process.env.PORT) || 4000;
+  app.listen(port, () => {
+    console.log(`Servidor backend escuchando en http://localhost:${port}`);
+  });
+};
 
-
-
-
-
-
-
-
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  startServer().catch((error) => {
+    console.error("No se pudo iniciar el backend:", error);
+    process.exitCode = 1;
+  });
+}

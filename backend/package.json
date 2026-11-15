@@ -6,7 +6,10 @@
   "type": "module",
   "scripts": {
     "dev": "node --watch index.js",
-    "start": "node index.js"
+    "start": "node index.js",
+    "seed": "node seed.js",
+    "test": "node --test auth.test.js",
+    "check:db": "node test-connection.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

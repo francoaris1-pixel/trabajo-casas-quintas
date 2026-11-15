@@ -4,8 +4,14 @@ const usuarioSchema = new mongoose.Schema(
   {
     nombre: { type: String, required: true },
     apellido: { type: String, default: "" },
-    correo: { type: String, required: true, unique: true },
-    contrasena: { type: String, required: true },
+    correo: {
+      type: String,
+      required: true,
+      unique: true,
+      lowercase: true,
+      trim: true,
+    },
+    contrasena: { type: String, required: true, select: false },
     telefono: { type: String, default: "" },
     rol: {
       type: String,
@@ -20,6 +26,5 @@ const Usuario = mongoose.model("Usuario", usuarioSchema, "usuarios");
 
 export { Usuario };
 export default Usuario;
-
 
 

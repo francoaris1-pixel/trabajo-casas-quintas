@@ -12,7 +12,11 @@ const propiedadSchema = new mongoose.Schema(
     direccion: { type: String, default: "" },
     maxHuespedes: { type: Number, default: 1, min: 1 },
     precioPorNoche: { type: Number, required: true, min: 0 },
-    estado: { type: String, default: "pending_review" },
+    estado: {
+      type: String,
+      enum: ["pending_review", "disponible", "suspendida"],
+      default: "pending_review",
+    },
   },
   { versionKey: false, collection: "propiedades" }
 );
@@ -21,6 +25,5 @@ const Propiedad = mongoose.model("Propiedad", propiedadSchema, "propiedades");
 
 export { Propiedad };
 export default Propiedad;
-
 
 

@@ -10,7 +10,11 @@ const pagoSchema = new mongoose.Schema(
     montoPagado: { type: Number, required: true, min: 0 },
     fechaPago: { type: Date, default: Date.now },
     metodoPago: { type: String, default: "efectivo" },
-    estado: { type: String, default: "pendiente" },
+    estado: {
+      type: String,
+      enum: ["pendiente", "pagado", "cancelado"],
+      default: "pendiente",
+    },
   },
   { versionKey: false, collection: "pagos" }
 );
@@ -19,6 +23,5 @@ const Pago = mongoose.model("Pago", pagoSchema, "pagos");
 
 export { Pago };
 export default Pago;
-
 
 
