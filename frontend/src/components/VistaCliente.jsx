@@ -243,19 +243,13 @@ export default function VistaCliente({ usuario, propiedades, onNotification }) {
         const reserva = datos.reserva;
         setReservas((prev) => [...prev, reserva]);
         setMisReservas((prev) => [...prev, reserva]);
-        onNotification?.(datos.evento);
+        onNotification?.();
         setMensaje("Reserva registrada. Queda pendiente de confirmación por el propietario.");
       } else {
         MOCK_RESERVATIONS.push(nuevaReserva);
         setReservas((prev) => [...prev, nuevaReserva]);
         setMisReservas((prev) => [...prev, nuevaReserva]);
         setMensaje("Reserva registrada. Queda pendiente de confirmación por el propietario.");
-        onNotification?.({
-          _id: `local-${Date.now()}`,
-          tipo: "nueva_reserva",
-          mensaje: `Nueva reserva pendiente para ${propiedad.titulo}.`,
-          fechaCreacion: new Date().toISOString(),
-        });
       }
       setForm({ desde: "", hasta: "", metodoPago: "efectivo" });
     } catch (submitError) {

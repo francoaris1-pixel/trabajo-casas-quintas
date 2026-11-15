@@ -1,10 +1,12 @@
+import "dotenv/config";
 import mongoose from "mongoose";
 
-const uri = "mongodb://127.0.0.1:27017/quintas_goya";
+const uri = process.env.MONGO_URI;
 
 try {
+  if (!uri) throw new Error("Falta configurar MONGO_URI en el entorno");
   await mongoose.connect(uri);
-  console.log("Conectado a", uri);
+  console.log("Conectado a MongoDB");
 
   const collections = await mongoose.connection.db.listCollections().toArray();
   console.log("Colecciones disponibles:");

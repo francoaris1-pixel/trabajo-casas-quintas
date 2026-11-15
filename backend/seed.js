@@ -1,4 +1,6 @@
+import "dotenv/config";
 ﻿import mongoose from "mongoose";
+import bcrypt from "bcryptjs";
 import {
   Usuario,
   Propiedad,
@@ -12,12 +14,13 @@ import {
   Notificacion,
 } from "./models.js";
 
-const uri = "mongodb+srv://francoaris72_db_user:goya12345@cluster0.l79b1bz.mongodb.net/quintas_goya?retryWrites=true&w=majority";
+const uri = process.env.MONGO_URI;
 
 async function seed() {
   try {
+    if (!uri) throw new Error("Falta configurar MONGO_URI en el entorno");
     await mongoose.connect(uri);
-    console.log("Conectado a", uri);
+    console.log("Conectado a MongoDB");
 
     // Limpieza previa para que el seed sea repetible
     await Promise.all([
@@ -37,7 +40,7 @@ async function seed() {
       nombre: "Administrador",
       apellido: "Maestro",
       correo: "admin@quintasgoya.com",
-      contrasena: "admin123",
+      contrasena: await bcrypt.hash("admin123", 12),
       telefono: "0000000000",
       rol: "admin",
     });
@@ -46,7 +49,7 @@ async function seed() {
       nombre: "Franco Hugo",
       apellido: "Aristiqui",
       correo: "franco.anfitrion@quintasgoya.com",
-      contrasena: "admin123",
+      contrasena: await bcrypt.hash("admin123", 12),
       telefono: "3794000000",
       rol: "anfitrion",
     });
@@ -55,7 +58,7 @@ async function seed() {
       nombre: "Franco",
       apellido: "Hugo Aristiqui",
       correo: "franco.inquilino@quintasgoya.com",
-      contrasena: "inquilino123",
+      contrasena: await bcrypt.hash("inquilino123", 12),
       telefono: "3794111111",
       rol: "inquilino",
     });

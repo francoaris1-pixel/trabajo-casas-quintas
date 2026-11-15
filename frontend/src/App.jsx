@@ -9,6 +9,46 @@ import { MOCK_PROPERTIES } from "./mockData.js";
 
 const esIdMongo = (id) => /^[a-f\d]{24}$/i.test(String(id || ""));
 
+function filtrarNotificaciones(datos, usuario) {
+  const usuarioId = String(usuario?._id || usuario?.id || "").toLowerCase();
+  const usuarioEmail = String(usuario?.email || usuario?.correo || "")
+    .trim()
+    .toLowerCase();
+
+  return datos.filter((notificacion) => {
+    if (!notificacion) return false;
+    const destinatario = notificacion.usuarioId
+      || notificacion.destinatarioId
+      || notificacion.usuario;
+    const destinatarioId = String(
+      destinatario && typeof destinatario === "object"
+        ? destinatario._id || destinatario.id || ""
+        : destinatario || ""
+    ).toLowerCase();
+    const destinatarioEmail = String(
+      notificacion.destinatarioEmail || notificacion.usuarioEmail || ""
+    ).trim().toLowerCase();
+
+    return (
+      (Boolean(usuarioId) && destinatarioId === usuarioId)
+      || (Boolean(usuarioEmail) && destinatarioEmail === usuarioEmail)
+    );
+  });
+}
+
+async function obtenerNotificaciones(usuario) {
+  const usuarioId = usuario?._id || usuario?.id;
+  const res = await fetch(`/api/notificaciones/${usuarioId}`);
+  const datos = await res.json();
+  if (!res.ok) {
+    throw new Error(datos.error || "No se pudieron cargar las notificaciones");
+  }
+  if (!Array.isArray(datos)) {
+    throw new Error("La respuesta de notificaciones no es valida");
+  }
+  return filtrarNotificaciones(datos, usuario);
+}
+
 class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
@@ -117,36 +157,54 @@ export default function App() {
     }
   };
 
-  const agregarNotificacion = (notificacion) => {
-    if (!notificacion) return;
-    setNotificaciones((prev) => [
-      notificacion,
-      ...prev.filter((item) => item._id !== notificacion._id),
-    ].slice(0, 20));
+  useEffect(() => {
+    if (vista !== "panel") return;
+    if (!usuario) {
+      setVista("login");
+      return;
+    }
+    if (!["inquilino", "anfitrion", "admin"].includes(usuario.rol)) {
+      setUsuario(null);
+      setPropiedades([]);
+      setNotificaciones([]);
+      setVista("home");
+      try {
+        localStorage.removeItem("user");
+      } catch {
+        // ignore
+      }
+    }
+  }, [vista, usuario]);
+
+  const actualizarNotificaciones = async () => {
+    const usuarioId = usuario?._id || usuario?.id;
+    if (esIdMongo(usuarioId)) {
+      try {
+        const datos = await obtenerNotificaciones(usuario);
+        setNotificaciones(datos);
+        setErrorNotificaciones("");
+      } catch (error) {
+        setErrorNotificaciones(error.message || "No se pudo conectar con el servidor");
+      }
+      return;
+    }
+    setNotificaciones([]);
   };
 
   useEffect(() => {
-    if (!esIdMongo(usuario?.id)) {
-      setNotificaciones([]);
+    const usuarioId = usuario?._id || usuario?.id;
+    setNotificaciones([]);
+    setErrorNotificaciones("");
+    if (!esIdMongo(usuarioId)) {
       return undefined;
     }
 
     let activo = true;
     const cargarNotificaciones = async () => {
       try {
-        const res = await fetch(`/api/notificaciones/${usuario.id}`);
-        const datos = await res.json();
-        if (!res.ok) throw new Error(datos.error || "No se pudieron cargar las notificaciones");
+        const datos = await obtenerNotificaciones(usuario);
         if (activo) {
-          setNotificaciones((actuales) => {
-            const combinadas = new Map(
-              actuales.map((item) => [item._id, item])
-            );
-            datos.forEach((item) => combinadas.set(item._id, item));
-            return [...combinadas.values()]
-              .sort((a, b) => new Date(b.fechaCreacion) - new Date(a.fechaCreacion))
-              .slice(0, 20);
-          });
+          setNotificaciones(datos);
           setErrorNotificaciones("");
         }
       } catch (error) {
@@ -160,7 +218,30 @@ export default function App() {
       activo = false;
       window.clearInterval(intervalo);
     };
-  }, [usuario?.id]);
+  }, [usuario?._id, usuario?.id]);
+
+  const alternarNotificaciones = async () => {
+    const abrir = !notificacionesAbiertas;
+    setNotificacionesAbiertas(abrir);
+    const usuarioId = usuario?._id || usuario?.id;
+    if (!abrir || !esIdMongo(usuarioId)) return;
+
+    try {
+      const res = await fetch(`/api/notificaciones/leer/${usuarioId}`, {
+        method: "PUT",
+      });
+      const datos = await res.json();
+      if (!res.ok) {
+        throw new Error(datos.error || "No se pudieron marcar las notificaciones como leidas");
+      }
+      setNotificaciones((actuales) =>
+        actuales.map((item) => ({ ...item, leida: true }))
+      );
+      setErrorNotificaciones("");
+    } catch (error) {
+      setErrorNotificaciones(error.message || "No se pudo conectar con el servidor");
+    }
+  };
 
   const panelPorRol = () => {
     if (!usuario || !usuario.rol) {
@@ -173,18 +254,14 @@ export default function App() {
     if (usuario.rol === "inquilino")
       return (
         <ErrorBoundary>
-          <VistaCliente usuario={usuario} propiedades={propiedades} onNotification={agregarNotificacion} />
+          <VistaCliente usuario={usuario} propiedades={propiedades} onNotification={actualizarNotificaciones} />
         </ErrorBoundary>
       );
     if (usuario.rol === "admin")
       return <Admin usuario={usuario} irAReservas={() => setVista("panel")} />;
     if (usuario.rol === "anfitrion")
-      return <PanelPropietario usuario={usuario} onNotification={agregarNotificacion} />;
-    return (
-      <div style={{ padding: "40px", background: "#f3f0f7", height: "100vh" }}>
-        Cargando panel de GoyaQuintas...
-      </div>
-    );
+      return <PanelPropietario usuario={usuario} onNotification={actualizarNotificaciones} />;
+    return null;
   };
 
   return (
@@ -211,7 +288,7 @@ export default function App() {
                 <button
                   type="button"
                   className="notification-toggle"
-                  onClick={() => setNotificacionesAbiertas((abierta) => !abierta)}
+                  onClick={alternarNotificaciones}
                   aria-label="Notificaciones"
                   aria-expanded={notificacionesAbiertas}
                 >
@@ -219,8 +296,10 @@ export default function App() {
                     <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
                     <path d="M10 21h4" />
                   </svg>
-                  {notificaciones.length > 0 && (
-                    <span className="notification-count">{notificaciones.length}</span>
+                  {notificaciones.some((item) => !item.leida) && (
+                    <span className="notification-count">
+                      {notificaciones.filter((item) => !item.leida).length}
+                    </span>
                   )}
                 </button>
                 {notificacionesAbiertas && (
@@ -235,8 +314,8 @@ export default function App() {
                           <li key={item._id}>
                             <span>{item.mensaje}</span>
                             <time>
-                              {item.fechaCreacion
-                                ? new Date(item.fechaCreacion).toLocaleString("es-AR")
+                              {(item.fecha || item.fechaCreacion)
+                                ? new Date(item.fecha || item.fechaCreacion).toLocaleString("es-AR")
                                 : ""}
                             </time>
                           </li>

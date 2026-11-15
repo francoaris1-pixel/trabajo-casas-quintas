@@ -124,17 +124,11 @@ export default function PanelPropietario({ usuario, onNotification }) {
         const datos = await res.json();
         if (!res.ok) throw new Error(datos.error || "No se pudo publicar la propiedad");
         setPropiedades((prev) => [datos.propiedad, ...prev]);
-        onNotification?.(datos.evento);
+        onNotification?.();
         setMensaje(datos.mensaje);
         publicado = true;
       } else {
         setPropiedades((prev) => [nuevaProp, ...prev]);
-        onNotification?.({
-          _id: `local-${Date.now()}`,
-          tipo: "propiedad_pendiente",
-          mensaje: `Nueva propiedad pendiente de revisión: ${nuevaProp.titulo}.`,
-          fechaCreacion: new Date().toISOString(),
-        });
         setMensaje("Propiedad publicada correctamente");
         publicado = true;
       }
@@ -189,7 +183,7 @@ export default function PanelPropietario({ usuario, onNotification }) {
         } else {
           setError(`${estadoTexto}, pero no se pudo enviar el email${destino}.`);
         }
-        onNotification?.(datos.evento);
+        onNotification?.();
       } else {
         const estado = accion === "confirmar" ? "confirmada" : accion === "rechazar" ? "rechazada" : reserva.estado;
         const index = MOCK_RESERVATIONS.findIndex((r) => String(r.id || r._id) === String(id));
@@ -201,14 +195,6 @@ export default function PanelPropietario({ usuario, onNotification }) {
           ? ` al cliente ${reserva.turista.telefono}`
           : " al cliente";
         setMensaje(`${accion === "recordatorio" ? "Recordatorio registrado" : `Reserva ${estado}`}. Aviso generado en modo demo${nombre}.`);
-        onNotification?.({
-          _id: `local-${Date.now()}`,
-          tipo: accion === "recordatorio" ? "recordatorio_reserva" : `reserva_${estado}`,
-          mensaje: accion === "recordatorio"
-            ? `Recordatorio enviado a ${reserva.turista?.nombre || "cliente"} para ${reserva.propiedadTitulo}.`
-            : `Reserva para ${reserva.propiedadTitulo} ${estado}.`,
-          fechaCreacion: new Date().toISOString(),
-        });
       }
     } catch (error) {
       setError(error.message || "No se pudo conectar con el servidor");

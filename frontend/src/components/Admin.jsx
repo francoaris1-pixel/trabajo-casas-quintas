@@ -3,10 +3,18 @@ import { MOCK_PROPERTIES, MOCK_OWNERS } from "../mockData.js";
 
 const API = "";
 
+const formatearFecha = (fecha) => {
+  const date = new Date(fecha);
+  return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString("es-AR");
+};
+
 export default function Admin({ usuario }) {
   const [tab, setTab] = useState("propietarios");
   const [propietarios, setPropietarios] = useState([]);
   const [propiedades, setPropiedades] = useState([]);
+  const [auditoria, setAuditoria] = useState([]);
+  const [cargandoAuditoria, setCargandoAuditoria] = useState(false);
+  const [errorAuditoria, setErrorAuditoria] = useState("");
   const [mensaje, setMensaje] = useState("");
   const [cargando, setCargando] = useState(true);
   const [confirmacion, setConfirmacion] = useState(null);
@@ -30,6 +38,38 @@ export default function Admin({ usuario }) {
   useEffect(() => {
     cargarPanel();
   }, []);
+
+  const usuarioId = usuario?._id || usuario?.id;
+  useEffect(() => {
+    if (tab !== "auditoria") return undefined;
+    let activo = true;
+
+    const cargarAuditoria = async () => {
+      setCargandoAuditoria(true);
+      setErrorAuditoria("");
+      try {
+        const res = await fetch(`${API}/api/auditoria`, {
+          headers: { "X-Usuario-ID": String(usuarioId || "") },
+        });
+        const datos = await res.json();
+        if (!res.ok) throw new Error(datos.error || "No se pudo cargar la auditoria");
+        if (!Array.isArray(datos)) throw new Error("La respuesta de auditoria no es valida");
+        if (activo) setAuditoria(datos);
+      } catch (error) {
+        if (activo) {
+          setAuditoria([]);
+          setErrorAuditoria(error.message || "No se pudo conectar con el servidor");
+        }
+      } finally {
+        if (activo) setCargandoAuditoria(false);
+      }
+    };
+
+    cargarAuditoria();
+    return () => {
+      activo = false;
+    };
+  }, [tab, usuarioId]);
 
   const abrirEdicion = (prop) => {
     setEditando(prop);
@@ -121,6 +161,9 @@ export default function Admin({ usuario }) {
         <button className={`panel-tab ${tab === "propiedades" ? "active" : ""}`} onClick={() => setTab("propiedades")}>
           Control General de Propiedades
         </button>
+        <button className={`panel-tab ${tab === "auditoria" ? "active" : ""}`} onClick={() => setTab("auditoria")}>
+          Auditoría del Sistema (Logs)
+        </button>
       </div>
 
       {tab === "propietarios" && (
@@ -209,6 +252,46 @@ export default function Admin({ usuario }) {
                   </div>
                 </article>
               ))}
+            </div>
+          )}
+        </section>
+      )}
+
+      {tab === "auditoria" && (
+        <section className="panel-card">
+          <div className="panel-card-header">
+            <h2>Auditoría del Sistema (Logs)</h2>
+            <p className="nota">Últimos eventos críticos registrados en la plataforma.</p>
+          </div>
+          {errorAuditoria && <p className="error">{errorAuditoria}</p>}
+          {cargandoAuditoria ? (
+            <p className="nota">Cargando auditoría...</p>
+          ) : auditoria.length === 0 ? (
+            <p className="nota">No hay registros de auditoría disponibles.</p>
+          ) : (
+            <div className="tabla-wrapper">
+              <table className="tabla-reservas">
+                <thead>
+                  <tr>
+                    <th>Fecha/Hora</th>
+                    <th>Usuario</th>
+                    <th>Acción</th>
+                    <th>Cambio (Antes -&gt; Ahora)</th>
+                    <th>IP</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {auditoria.map((log, index) => (
+                    <tr key={log._id || `${log.fecha}-${index}`}>
+                      <td>{formatearFecha(log.fecha)}</td>
+                      <td>{log.usuario}</td>
+                      <td>{log.accion}</td>
+                      <td>{log.detalle}</td>
+                      <td>{log.ip}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
         </section>

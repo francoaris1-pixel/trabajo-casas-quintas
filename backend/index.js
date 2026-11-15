@@ -2,6 +2,7 @@
 import express from "express";
 import cors from "cors";
 import mongoose from "mongoose";
+import bcrypt from "bcryptjs";
 import {
   Usuario,
   Propiedad,
@@ -10,6 +11,7 @@ import {
   Foto,
   MetodoPago,
   Notificacion,
+  LogAuditoria,
 } from "./models.js";
 import {
   enviarMail,
@@ -22,8 +24,13 @@ app.use(cors());
 app.use(express.json());
 
 // ---------- CONEXION MONGODB ----------
+if (!process.env.MONGO_URI) {
+  console.error("Falta configurar MONGO_URI en el entorno");
+  process.exit(1);
+}
+
 try {
-  await mongoose.connect("mongodb+srv://francoaris72_db_user:goya12345@cluster0.l79b1bz.mongodb.net/quintas_goya?retryWrites=true&w=majority");
+  await mongoose.connect(process.env.MONGO_URI);
   console.log("¡Conexión exitosa a la base de datos unificada: quintas_goya!");
 } catch (error) {
   console.error("Error crítico al conectar a MongoDB:", error);
@@ -43,11 +50,19 @@ if ((await MetodoPago.countDocuments()) === 0) {
 
 // Seed automatico: si la base esta vacia crea datos de ejemplo
 if ((await Usuario.countDocuments()) === 0) {
-  await Usuario.create([
-    { nombre: "Administrador", correo: "admin@casas.com", contrasena: "admin123", rol: "anfitrion", telefono: "0000000000" },
+  const usuariosIniciales = [
+    { nombre: "Administrador", correo: "admin@casas.com", contrasena: "admin123", rol: "admin", telefono: "0000000000" },
     { nombre: "Juan", apellido: "Perez", correo: "juan@casas.com", contrasena: "pass1", rol: "anfitrion", telefono: "2664567890" },
     { nombre: "Maria", apellido: "Gomez", correo: "maria@casas.com", contrasena: "pass2", rol: "anfitrion", telefono: "2664567891" },
-  ]);
+  ];
+  await Usuario.create(
+    await Promise.all(
+      usuariosIniciales.map(async (usuario) => ({
+        ...usuario,
+        contrasena: await bcrypt.hash(usuario.contrasena, 12),
+      }))
+    )
+  );
   const juan = await Usuario.findOne({ correo: "juan@casas.com" });
   const maria = await Usuario.findOne({ correo: "maria@casas.com" });
   const propiedades = await Propiedad.insertMany([
@@ -103,17 +118,129 @@ async function registrarNotificacion(usuarios, datos) {
   const destinatarios = [...new Set(usuarios.filter(Boolean).map(String))];
   if (!destinatarios.length) return [];
   return Notificacion.insertMany(
-    destinatarios.map((usuario) => ({ usuario, ...datos }))
+    destinatarios.map((usuarioId) => ({
+      usuarioId,
+      mensaje: datos.mensaje,
+      canal: datos.canal,
+    }))
+  );
+}
+
+function limpiarDatoLog(valor) {
+  return String(valor ?? "desconocido").replace(/[\r\n|]+/g, " ");
+}
+
+async function registrarLog({ usuario, rol, accion, detalle, ip }) {
+  const fecha = new Date();
+  const registro = {
+    usuario: String(usuario || "desconocido"),
+    rol: String(rol || "desconocido"),
+    accion: String(accion || "ACCION_DESCONOCIDA"),
+    detalle: String(detalle || "Sin detalle"),
+    ip: String(ip || "desconocida"),
+    fecha,
+  };
+  const fechaFormateada = fecha.toISOString().slice(0, 19).replace("T", " ");
+
+  console.log(
+    `[${fechaFormateada}] Usuario: ${limpiarDatoLog(registro.usuario)} | Acción: ${limpiarDatoLog(registro.accion)} | Cambio: ${limpiarDatoLog(registro.detalle)} | IP: ${limpiarDatoLog(registro.ip)}`
+  );
+
+  try {
+    await LogAuditoria.create(registro);
+  } catch (error) {
+    console.error("No se pudo guardar el registro de auditoria:", error);
+  }
+}
+
+async function registrarLoginFallido(req, correo, usuario = null, detalle = "Credenciales incorrectas") {
+  await registrarLog({
+    usuario: typeof correo === "string" && correo.trim() ? correo.trim() : "desconocido",
+    rol: usuario?.rol || "desconocido",
+    accion: "LOGIN_FALLIDO",
+    detalle,
+    ip: req.ip,
+  });
+}
+
+function obtenerCambiosPropiedad(propiedad, datos) {
+  const campos = [
+    "titulo",
+    "descripcion",
+    "direccion",
+    "maxHuespedes",
+    "precioPorNoche",
+    "estado",
+  ];
+
+  return campos.flatMap((campo) => {
+    const solicitado = datos[campo];
+    if (solicitado === undefined || solicitado === "") return [];
+    const nuevo = ["maxHuespedes", "precioPorNoche"].includes(campo)
+      ? Number(solicitado)
+      : solicitado;
+    if (String(propiedad[campo]) === String(nuevo)) return [];
+    return [{ campo, anterior: propiedad[campo], nuevo }];
+  });
+}
+
+async function registrarCambiosPropiedad(req, propiedad, cambios) {
+  const usuario = req.usuario.correo || req.usuario.nombre || req.usuario._id;
+  if (!cambios.length) {
+    await registrarLog({
+      usuario,
+      rol: req.usuario.rol,
+      accion: "UPDATE_PROPIEDAD",
+      detalle: `Propiedad ${propiedad._id} editada sin cambios en sus valores`,
+      ip: req.ip,
+    });
+    return;
+  }
+
+  await Promise.all(
+    cambios.map(({ campo, anterior, nuevo }) =>
+      registrarLog({
+        usuario,
+        rol: req.usuario.rol,
+        accion: campo === "precioPorNoche"
+          ? "UPDATE_PRECIO"
+          : campo === "estado"
+            ? "UPDATE_ESTADO_PROPIEDAD"
+            : "UPDATE_PROPIEDAD",
+        detalle: `${campo}: ${anterior} -> ${nuevo}`,
+        ip: req.ip,
+      })
+    )
   );
 }
 
 // ---------- LOGIN ----------
 app.post("/api/login", async (req, res) => {
-  const { correo, contrasena } = req.body;
+  const { correo, contrasena } = req.body || {};
 
-  const user = await Usuario.findOne({ correo, contrasena });
-  if (!user) {
+  if (typeof correo !== "string" || typeof contrasena !== "string") {
+    await registrarLoginFallido(req, correo, null, "Datos de inicio de sesion invalidos");
     return res.status(401).json({ error: "Correo o contrasena incorrectos" });
+  }
+
+  const user = await Usuario.findOne({ correo });
+  if (!user) {
+    await registrarLoginFallido(req, correo);
+    return res.status(401).json({ error: "Correo o contrasena incorrectos" });
+  }
+
+  const tieneHashBcrypt = /^\$2[aby]\$\d{2}\$/.test(user.contrasena);
+  const contrasenaValida = tieneHashBcrypt
+    ? await bcrypt.compare(contrasena, user.contrasena)
+    : user.contrasena === contrasena;
+  if (!contrasenaValida) {
+    await registrarLoginFallido(req, correo, user);
+    return res.status(401).json({ error: "Correo o contrasena incorrectos" });
+  }
+
+  if (!tieneHashBcrypt) {
+    user.contrasena = await bcrypt.hash(contrasena, 12);
+    await user.save();
   }
 
   res.json({
@@ -147,7 +274,7 @@ app.post("/api/registro", async (req, res) => {
     nombre,
     apellido: apellido || "",
     correo,
-    contrasena,
+    contrasena: await bcrypt.hash(contrasena, 12),
     telefono: telefono.trim(),
     rol: "inquilino",
   });
@@ -312,7 +439,7 @@ app.post("/api/reservas", async (req, res) => {
       u = await Usuario.create({
         nombre,
         correo,
-        contrasena: "sin-password",
+        contrasena: await bcrypt.hash("sin-password", 12),
         telefono: telefono.trim(),
         rol: "inquilino",
       });
@@ -340,12 +467,10 @@ app.post("/api/reservas", async (req, res) => {
 
   const turista = await Usuario.findById(turistaId);
   const eventos = await registrarNotificacion(
-    [propiedad.propietario, turistaId],
+    [propiedad.propietario],
     {
-      tipo: "nueva_reserva",
+      canal: "reserva",
       mensaje: `Nueva reserva pendiente para ${propiedad.titulo}.`,
-      reserva: reserva._id,
-      propiedad: propiedad._id,
     }
   );
 
@@ -366,7 +491,7 @@ app.post("/api/reservas", async (req, res) => {
         telefono: turista.telefono,
       } : null,
     },
-    evento: eventos.find((evento) => String(evento.usuario) === String(turistaId)),
+    evento: eventos[0],
     pago: { id: pago._id, monto: pago.montoPagado, metodoPago: pago.metodoPago, estado: pago.estado },
   });
 });
@@ -374,12 +499,60 @@ app.post("/api/reservas", async (req, res) => {
 // ---------- PROPIETARIO ----------
 // Middleware simple: verifica usuario propietario
 async function authPropietario(req, res, next) {
-  const usuario = await Usuario.findById(req.headers["x-usuario-id"]);
-  if (!usuario || usuario.rol !== "anfitrion") {
-    return res.status(403).json({ error: "Solo anfitriones" });
+  const usuarioId = req.headers["x-usuario-id"];
+  if (!mongoose.Types.ObjectId.isValid(usuarioId)) {
+    return res.status(401).json({ error: "Falta identificacion de usuario valida" });
   }
-  req.usuario = usuario;
-  next();
+  try {
+    const usuario = await Usuario.findById(usuarioId);
+    if (!usuario || usuario.rol !== "anfitrion") {
+      return res.status(403).json({ error: "Solo anfitriones" });
+    }
+    req.usuario = usuario;
+    next();
+  } catch (error) {
+    console.error("Error al verificar permisos de anfitrion:", error);
+    res.status(500).json({ error: "No se pudieron verificar los permisos" });
+  }
+}
+
+async function authPropietarioOAdmin(req, res, next) {
+  const usuarioId = req.headers["x-usuario-id"];
+  if (!mongoose.Types.ObjectId.isValid(usuarioId)) {
+    return res.status(401).json({ error: "Falta identificacion de usuario valida" });
+  }
+
+  try {
+    const usuario = await Usuario.findById(usuarioId);
+    if (!usuario) return res.status(401).json({ error: "Usuario no autorizado" });
+    if (!["anfitrion", "admin"].includes(usuario.rol)) {
+      return res.status(403).json({ error: "Solo anfitriones o administradores" });
+    }
+    req.usuario = usuario;
+    next();
+  } catch (error) {
+    console.error("Error al verificar permisos de propiedad:", error);
+    res.status(500).json({ error: "No se pudieron verificar los permisos" });
+  }
+}
+
+async function authAdmin(req, res, next) {
+  const usuarioId = req.headers["x-usuario-id"];
+  if (!mongoose.Types.ObjectId.isValid(usuarioId)) {
+    return res.status(401).json({ error: "Falta identificacion de usuario valida" });
+  }
+
+  try {
+    const usuario = await Usuario.findById(usuarioId);
+    if (!usuario || usuario.rol !== "admin") {
+      return res.status(403).json({ error: "Solo administradores" });
+    }
+    req.usuario = usuario;
+    next();
+  } catch (error) {
+    console.error("Error al verificar permisos de auditoria:", error);
+    res.status(500).json({ error: "No se pudieron verificar los permisos" });
+  }
 }
 
 // Panel propio: sus propiedades + reservas + estadisticas
@@ -422,6 +595,9 @@ app.get("/api/propietario/panel", authPropietario, async (req, res) => {
 
 // El propietario edita SOLO sus propiedades
 app.put("/api/propietario/propiedades/:id", authPropietario, async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+    return res.status(400).json({ error: "ID de propiedad invalido" });
+  }
   const prop = await Propiedad.findOne({
     _id: req.params.id,
     propietario: req.usuario._id,
@@ -430,6 +606,7 @@ app.put("/api/propietario/propiedades/:id", authPropietario, async (req, res) =>
 
   const { titulo, descripcion, direccion, maxHuespedes, precioPorNoche, estado } =
     req.body;
+  const cambios = obtenerCambiosPropiedad(prop, req.body);
   if (titulo) prop.titulo = titulo;
   if (descripcion) prop.descripcion = descripcion;
   if (direccion) prop.direccion = direccion;
@@ -443,6 +620,7 @@ app.put("/api/propietario/propiedades/:id", authPropietario, async (req, res) =>
     prop.precioPorNoche = precio;
   }
   await prop.save();
+  await registrarCambiosPropiedad(req, prop, cambios);
 
   res.json({ mensaje: `Propiedad "${prop.titulo}" actualizada`, propiedad: prop });
 });
@@ -456,12 +634,22 @@ app.get("/api/admin/panel", async (req, res) => {
   res.json({ propiedades, reservas });
 });
 
-app.put("/api/admin/propiedades/:id", async (req, res) => {
+app.put("/api/admin/propiedades/:id", authPropietarioOAdmin, async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+    return res.status(400).json({ error: "ID de propiedad invalido" });
+  }
   const prop = await Propiedad.findById(req.params.id);
   if (!prop) return res.status(404).json({ error: "Propiedad no encontrada" });
+  if (
+    req.usuario.rol !== "admin"
+    && String(prop.propietario) !== String(req.usuario._id)
+  ) {
+    return res.status(403).json({ error: "No puedes modificar esta propiedad" });
+  }
 
   const { titulo, descripcion, direccion, maxHuespedes, precioPorNoche, estado } =
     req.body;
+  const cambios = obtenerCambiosPropiedad(prop, req.body);
   if (titulo) prop.titulo = titulo;
   if (descripcion) prop.descripcion = descripcion;
   if (direccion) prop.direccion = direccion;
@@ -475,6 +663,7 @@ app.put("/api/admin/propiedades/:id", async (req, res) => {
     prop.precioPorNoche = precio;
   }
   await prop.save();
+  await registrarCambiosPropiedad(req, prop, cambios);
 
   res.json({ mensaje: `Propiedad "${prop.titulo}" actualizada`, propiedad: prop });
 });
@@ -514,12 +703,11 @@ app.post("/api/admin/propiedades", async (req, res) => {
     const eventos = await registrarNotificacion(
       [propId, ...administradores.map((admin) => admin._id)],
       {
-        tipo: "propiedad_pendiente",
+        canal: "propiedad_pendiente",
         mensaje: `Nueva propiedad pendiente de revisión: ${nueva.titulo}.`,
-        propiedad: nueva._id,
       }
     );
-    evento = eventos.find((item) => String(item.usuario) === String(propId));
+    evento = eventos.find((item) => String(item.usuarioId) === String(propId));
   }
 
   res.status(201).json({
@@ -529,10 +717,40 @@ app.post("/api/admin/propiedades", async (req, res) => {
   });
 });
 
-app.delete("/api/admin/propiedades/:id", async (req, res) => {
-  const prop = await Propiedad.findByIdAndDelete(req.params.id);
+app.delete("/api/admin/propiedades/:id", authPropietarioOAdmin, async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+    return res.status(400).json({ error: "ID de propiedad invalido" });
+  }
+  const prop = await Propiedad.findById(req.params.id);
   if (!prop) return res.status(404).json({ error: "Propiedad no encontrada" });
+  if (
+    req.usuario.rol !== "admin"
+    && String(prop.propietario) !== String(req.usuario._id)
+  ) {
+    return res.status(403).json({ error: "No puedes eliminar esta propiedad" });
+  }
+  await prop.deleteOne();
+  await registrarLog({
+    usuario: req.usuario.correo || req.usuario.nombre || req.usuario._id,
+    rol: req.usuario.rol,
+    accion: "DELETE_PROPIEDAD",
+    detalle: `Propiedad eliminada: ${prop.titulo} (${prop._id})`,
+    ip: req.ip,
+  });
   res.json({ mensaje: `Propiedad "${prop.titulo}" eliminada` });
+});
+
+app.get("/api/auditoria", authAdmin, async (req, res) => {
+  try {
+    const registros = await LogAuditoria.find()
+      .sort({ fecha: -1 })
+      .limit(50)
+      .lean();
+    res.json(registros);
+  } catch (error) {
+    console.error("Error al consultar registros de auditoria:", error);
+    res.status(500).json({ error: "No se pudieron obtener los registros de auditoria" });
+  }
 });
 
 app.put("/api/reservas/:id/accion", async (req, res) => {
@@ -568,21 +786,35 @@ app.put("/api/reservas/:id/accion", async (req, res) => {
 
     const estados = { confirmar: "confirmada", rechazar: "rechazada" };
     if (estados[accion]) {
+      const estadoAnterior = reserva.estado;
       reserva.estado = estados[accion];
       await reserva.save();
+      await registrarLog({
+        usuario: anfitrion.correo || anfitrion.nombre || anfitrion._id,
+        rol: anfitrion.rol,
+        accion: "UPDATE_RESERVA",
+        detalle: `Reserva ${reserva._id}: ${estadoAnterior} -> ${reserva.estado}`,
+        ip: req.ip,
+      });
+    } else if (accion === "recordatorio") {
+      await registrarLog({
+        usuario: anfitrion.correo || anfitrion.nombre || anfitrion._id,
+        rol: anfitrion.rol,
+        accion: "RECORDATORIO_RESERVA",
+        detalle: `Recordatorio enviado para la reserva ${reserva._id}`,
+        ip: req.ip,
+      });
     }
 
-    const tipo = accion === "recordatorio" ? "recordatorio_reserva" : `reserva_${reserva.estado}`;
+    const canal = accion === "recordatorio" ? "recordatorio_reserva" : `reserva_${reserva.estado}`;
     const mensaje = accion === "recordatorio"
       ? `Recordatorio enviado para tu reserva en ${reserva.propiedad.titulo}.`
       : `Tu reserva para ${reserva.propiedad.titulo} fue ${reserva.estado === "confirmada" ? "confirmada" : "rechazada"}.`;
     const eventos = await registrarNotificacion(
-      [reserva.turista._id, anfitrion._id],
+      [reserva.turista._id],
       {
-        tipo,
+        canal,
         mensaje,
-        reserva: reserva._id,
-        propiedad: reserva.propiedad._id,
       }
     );
 
@@ -617,7 +849,7 @@ app.put("/api/reservas/:id/accion", async (req, res) => {
         canal: "email",
         telefono: reserva.turista.telefono,
       },
-      evento: eventos.find((evento) => String(evento.usuario) === String(anfitrion._id)),
+      evento: eventos[0],
     });
   } catch (error) {
     console.error("Error al gestionar la reserva:", error);
@@ -657,15 +889,14 @@ app.post("/api/propiedades", async (req, res) => {
     const eventos = await registrarNotificacion(
       [usuario._id, ...administradores.map((admin) => admin._id)],
       {
-        tipo: "propiedad_pendiente",
+        canal: "propiedad_pendiente",
         mensaje: `Nueva propiedad pendiente de revisión: ${nueva.titulo}.`,
-        propiedad: nueva._id,
       }
     );
     res.status(201).json({
       mensaje: `Propiedad "${titulo}" publicada`,
       propiedad: nueva,
-      evento: eventos.find((evento) => String(evento.usuario) === String(usuario._id)),
+      evento: eventos.find((evento) => String(evento.usuarioId) === String(usuario._id)),
     });
     return;
   }
@@ -751,14 +982,29 @@ app.get("/api/notificaciones/:usuarioId", async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(req.params.usuarioId)) {
       return res.status(400).json({ error: "ID de usuario invalido" });
     }
-    const notificaciones = await Notificacion.find({ usuario: req.params.usuarioId })
-      .sort({ fechaCreacion: -1 })
-      .limit(20)
+    const notificaciones = await Notificacion.find({ usuarioId: req.params.usuarioId })
+      .sort({ fecha: -1 })
       .lean();
     res.json(notificaciones);
   } catch (error) {
     console.error("Error al obtener notificaciones:", error);
     res.status(500).json({ error: "No se pudieron obtener las notificaciones" });
+  }
+});
+
+app.put("/api/notificaciones/leer/:usuarioId", async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.usuarioId)) {
+      return res.status(400).json({ error: "ID de usuario invalido" });
+    }
+    const resultado = await Notificacion.updateMany(
+      { usuarioId: req.params.usuarioId, leida: false },
+      { $set: { leida: true } }
+    );
+    res.json({ modificadas: resultado.modifiedCount });
+  } catch (error) {
+    console.error("Error al marcar notificaciones como leidas:", error);
+    res.status(500).json({ error: "No se pudieron marcar las notificaciones como leidas" });
   }
 });
 const PORT = 4000;

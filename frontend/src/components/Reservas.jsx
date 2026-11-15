@@ -41,7 +41,7 @@ export default function Reservas({ usuario, propiedades, onNotification }) {
       const datos = await res.json();
       if (!res.ok) throw new Error(datos.error || "No se pudo registrar la reserva");
       setMensaje(`${datos.mensaje}. Pendiente de confirmación.`);
-      onNotification?.(datos.evento);
+      onNotification?.();
     } catch (submitError) {
       setError(submitError.message || "No se pudo conectar con el servidor");
     }

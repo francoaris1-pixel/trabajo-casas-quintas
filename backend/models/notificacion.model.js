@@ -2,17 +2,15 @@ import mongoose from "mongoose";
 
 const notificacionSchema = new mongoose.Schema(
   {
-    usuario: {
+    usuarioId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Usuario",
       required: true,
     },
-    tipo: { type: String, required: true },
     mensaje: { type: String, required: true },
-    reserva: { type: mongoose.Schema.Types.ObjectId, ref: "Reserva" },
-    propiedad: { type: mongoose.Schema.Types.ObjectId, ref: "Propiedad" },
+    canal: { type: String, required: true },
     leida: { type: Boolean, default: false },
-    fechaCreacion: { type: Date, default: Date.now },
+    fecha: { type: Date, default: Date.now },
   },
   { versionKey: false, collection: "notificaciones" }
 );
