@@ -94,3 +94,30 @@ export function mailReserva({ usuario, propiedad, reserva, metodoPago }) {
     `,
   };
 }
+
+export function mailEstadoReserva({ usuario, propiedad, reserva, estado }) {
+  const mensajes = {
+    confirmada: {
+      asunto: `Reserva confirmada: ${propiedad.titulo}`,
+      titulo: "Tu reserva fue confirmada",
+    },
+    rechazada: {
+      asunto: `Actualización de tu reserva: ${propiedad.titulo}`,
+      titulo: "Tu reserva no pudo ser confirmada",
+    },
+  };
+  const mensaje = mensajes[estado];
+  if (!mensaje) throw new Error("Estado de reserva no válido para notificación");
+  return {
+    para: usuario.correo,
+    asunto: mensaje.asunto,
+    html: `
+      <h2>${mensaje.titulo}</h2>
+      <p>Hola ${escaparHtml(usuario.nombre)},</p>
+      <p><b>Propiedad:</b> ${escaparHtml(propiedad.titulo)}</p>
+      <p><b>Check-in:</b> ${fecha(reserva.fechaInicio)}</p>
+      <p><b>Check-out:</b> ${fecha(reserva.fechaFin)}</p>
+      <p style="color:#888">Goya Recibe</p>
+    `,
+  };
+}

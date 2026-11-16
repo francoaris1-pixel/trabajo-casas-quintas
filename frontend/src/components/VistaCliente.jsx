@@ -110,7 +110,7 @@ function Calendario({ reservas = [] }) {
   );
 }
 
-export default function VistaCliente({ usuario }) {
+export default function VistaCliente({ usuario, onNotification }) {
   const [propiedades, setPropiedades] = useState([]);
   const [seleccionada, setSeleccionada] = useState("");
   const [reservas, setReservas] = useState([]);
@@ -120,12 +120,38 @@ export default function VistaCliente({ usuario }) {
   const [form, setForm] = useState({ desde: "", hasta: "", metodoPago: "efectivo" });
   const [misReservas, setMisReservas] = useState([]);
   const [cancelandoId, setCancelandoId] = useState(null);
+  const [calificandoId, setCalificandoId] = useState(null);
+  const [calificaciones, setCalificaciones] = useState({});
+  const [calificacionesEnVista, setCalificacionesEnVista] = useState({});
+  const [comentarios, setComentarios] = useState({});
   const [confirmarId, setConfirmarId] = useState(null);
   const [cargando, setCargando] = useState(true);
 
   const cargarMisReservas = async () => {
     const mine = await api("/api/reservas/mis");
     setMisReservas(mine);
+  };
+
+  const enviarCalificacion = async (reservaId) => {
+    const calificacion = calificaciones[reservaId];
+    if (!calificacion) return;
+    setError("");
+    setCalificandoId(reservaId);
+    try {
+      await api(`/api/reservas/${reservaId}/calificar`, {
+        method: "POST",
+        body: JSON.stringify({
+          calificacion,
+          comentario: comentarios[reservaId] || "",
+        }),
+      });
+      await cargarMisReservas();
+      setMensaje("Gracias por calificar tu estadía.");
+    } catch (requestError) {
+      setError(requestError.message || "No se pudo enviar la calificación");
+    } finally {
+      setCalificandoId(null);
+    }
   };
 
   useEffect(() => {
@@ -186,6 +212,7 @@ export default function VistaCliente({ usuario }) {
           metodoPago: form.metodoPago,
         }),
       });
+      await onNotification?.();
       setForm({ desde: "", hasta: "", metodoPago: "efectivo" });
       setMensaje(result.mensaje);
       await Promise.all([
@@ -322,6 +349,76 @@ export default function VistaCliente({ usuario }) {
                   <p>Desde: {String(r.checkIn).slice(0, 10)} hasta {String(r.checkOut).slice(0, 10)}</p>
                   <p>Monto: ${Number(r.montoTotal).toLocaleString("es-AR")}</p>
                   <p>Estado: {r.estado}</p>
+                  {r.calificacion != null ? (
+                    <div className="reserva-rating">
+                      <p>
+                        Tu calificación:{" "}
+                        <span
+                          className="rating-stars-display"
+                          aria-label={`${r.calificacion} de 5 estrellas`}
+                        >
+                          {"★".repeat(r.calificacion)}
+                          {"☆".repeat(5 - r.calificacion)}
+                        </span>{" "}
+                        ({r.calificacion}/5)
+                      </p>
+                      {r.comentario && <p className="rating-comment-display">{r.comentario}</p>}
+                    </div>
+                  ) : r.puedeCalificar ? (
+                    <div className="reserva-rating">
+                      <p>¿Cómo fue tu estadía?</p>
+                      <div
+                        className="rating-star-picker"
+                        role="group"
+                        aria-label="Elegir calificación"
+                        onMouseLeave={() =>
+                          setCalificacionesEnVista((current) => ({ ...current, [r.id]: 0 }))
+                        }
+                      >
+                        {[1, 2, 3, 4, 5].map((score) => (
+                          <button
+                            key={score}
+                            type="button"
+                            className={`rating-star-button ${score <= (calificacionesEnVista[r.id] || calificaciones[r.id] || 0) ? "selected" : ""}`}
+                            onClick={() =>
+                              setCalificaciones((current) => ({ ...current, [r.id]: score }))
+                            }
+                            onMouseEnter={() =>
+                              setCalificacionesEnVista((current) => ({ ...current, [r.id]: score }))
+                            }
+                            aria-label={`${score} ${score === 1 ? "estrella" : "estrellas"}`}
+                            aria-pressed={calificaciones[r.id] === score}
+                          >
+                            ★
+                          </button>
+                        ))}
+                      </div>
+                      <label className="rating-comment-label">
+                        Comentario (opcional)
+                        <textarea
+                          value={comentarios[r.id] || ""}
+                          maxLength={300}
+                          rows={2}
+                          onChange={(event) =>
+                            setComentarios((current) => ({
+                              ...current,
+                              [r.id]: event.target.value,
+                            }))
+                          }
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        className="rating-submit-button"
+                        onClick={() => enviarCalificacion(r.id)}
+                        disabled={!calificaciones[r.id] || calificandoId === r.id}
+                      >
+                        {calificandoId === r.id ? "Enviando..." : "Enviar calificación"}
+                      </button>
+                    </div>
+                  ) : !["cancelada", "rechazada"].includes(r.estado) ? (
+                    <p className="rating-pending">Podrás calificarla después de la fecha de salida.</p>
+                  ) : null}
                 </div>
                 {r.estado !== "cancelada" && (
                   <button className="btn-cancelar" onClick={() => setConfirmarId(r.id)} disabled={cancelandoId === r.id}>

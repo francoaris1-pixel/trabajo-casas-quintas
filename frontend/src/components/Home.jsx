@@ -69,7 +69,8 @@ function mapPropiedad(p) {
     parking,
     estado: p.estado || "",
     descripcion: p.descripcion || "",
-    rating: p.rating || 5,
+    rating: Number(p.promedioCalificacion) || 0,
+    ratingCount: Number(p.cantidadResenas) || 0,
   };
 }
 
@@ -292,10 +293,17 @@ export default function Home({
 
               <div className="mt-card-body">
                 <h3 className="mt-card-title">{p.titulo}</h3>
-                <div className="mt-rating">
-                  {"★".repeat(Math.round(p.rating || 5))}
-                  <span>{Number(p.rating || 5).toFixed(1)}</span>
-                </div>
+                {p.ratingCount > 0 ? (
+                  <div
+                    className="mt-rating"
+                    aria-label={`Calificación promedio ${p.rating.toFixed(1)} de 5, ${p.ratingCount} reseñas`}
+                  >
+                    <span className="rating-stars-display" aria-hidden="true">★</span>
+                    <span>{p.rating.toFixed(1)} ({p.ratingCount})</span>
+                  </div>
+                ) : (
+                  <p className="mt-rating-empty">Sin calificaciones aún</p>
+                )}
 
                 <div className="mt-price-row">
                   <span className="mt-price">{fmt(p.precio)}</span>
@@ -355,6 +363,14 @@ export default function Home({
               <p>{propiedadDetalle.descripcion}</p>
               <p>{fmt(propiedadDetalle.precio)} / noche</p>
               <p>{propiedadDetalle.specs.join(" • ")}</p>
+              {propiedadDetalle.ratingCount > 0 ? (
+                <p className="property-detail-rating">
+                  <span className="rating-stars-display" aria-hidden="true">★</span>{" "}
+                  {propiedadDetalle.rating.toFixed(1)} ({propiedadDetalle.ratingCount} reseñas)
+                </p>
+              ) : (
+                <p className="mt-rating-empty">Sin calificaciones aún</p>
+              )}
               <div className="property-image-carousel">
                 {propiedadDetalle.imagenes.length > 0 && !imagenDetalleError ? (
                   <img

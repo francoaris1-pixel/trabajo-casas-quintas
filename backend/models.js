@@ -7,3 +7,5 @@ export { Reporte } from "./models/reporte.model.js";
 export { Liquidacion } from "./models/liquidacion.model.js";
 export { Resena } from "./models/reseña.model.js";
 export { MetodoPago } from "./models/metodoPago.model.js";
+export { Notificacion } from "./models/notificacion.model.js";
+export { LogAuditoria } from "./models/logAuditoria.model.js";

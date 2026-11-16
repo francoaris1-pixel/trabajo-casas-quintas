@@ -9,13 +9,14 @@ const fmtDate = (value) => {
   return date.toLocaleDateString("es-AR");
 };
 
-export default function PanelPropietario({ usuario }) {
+export default function PanelPropietario({ usuario, onNotification }) {
   const [propiedades, setPropiedades] = useState([]);
   const [reservas, setReservas] = useState([]);
   const [estadisticas, setEstadisticas] = useState([]);
   const [mensaje, setMensaje] = useState("");
   const [error, setError] = useState("");
   const [guardando, setGuardando] = useState(false);
+  const [reservaActualizandoId, setReservaActualizandoId] = useState(null);
   const [nueva, setNueva] = useState({
     titulo: "",
     descripcion: "",
@@ -96,6 +97,24 @@ export default function PanelPropietario({ usuario }) {
       await cargarPanel();
     } catch (requestError) {
       setError(requestError.message || "No se pudo eliminar la propiedad");
+    }
+  };
+
+  const gestionarReserva = async (reservaId, accion) => {
+    setReservaActualizandoId(reservaId);
+    setError("");
+    try {
+      const result = await api(`/api/reservas/${reservaId}/accion`, {
+        method: "PUT",
+        body: JSON.stringify({ accion }),
+      });
+      setMensaje(result.mensaje);
+      await cargarPanel();
+      await onNotification?.();
+    } catch (requestError) {
+      setError(requestError.message || "No se pudo actualizar la reserva");
+    } finally {
+      setReservaActualizandoId(null);
     }
   };
 
@@ -228,6 +247,7 @@ export default function PanelPropietario({ usuario }) {
                   <th>Desde</th>
                   <th>Hasta</th>
                   <th>Estado</th>
+                  <th>Acciones</th>
                 </tr>
               </thead>
               <tbody>
@@ -238,7 +258,29 @@ export default function PanelPropietario({ usuario }) {
                     <td>{r.turista?.telefono || "-"}</td>
                     <td>{fmtDate(r.checkIn)}</td>
                     <td>{fmtDate(r.checkOut)}</td>
-                    <td>{r.estado || "confirmada"}</td>
+                    <td>{r.estado === "rechazada" ? "Rechazada" : r.estado || "Confirmada"}</td>
+                    <td>
+                      {r.estado === "pendiente" && (
+                        <div className="reservation-actions">
+                          <button
+                            type="button"
+                            className="btn-primary chico"
+                            onClick={() => gestionarReserva(r.id, "confirmar")}
+                            disabled={reservaActualizandoId === r.id}
+                          >
+                            Confirmar
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-danger chico"
+                            onClick={() => gestionarReserva(r.id, "rechazar")}
+                            disabled={reservaActualizandoId === r.id}
+                          >
+                            Rechazar
+                          </button>
+                        </div>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>

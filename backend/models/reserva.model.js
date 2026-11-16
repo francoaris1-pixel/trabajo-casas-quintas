@@ -33,9 +33,11 @@ const reservaSchema = new mongoose.Schema(
       },
     },
     montoTotal: { type: Number, default: 0, min: 0 },
+    calificacion: { type: Number, min: 1, max: 5, default: null },
+    comentario: { type: String, trim: true, maxlength: 300, default: "" },
     estado: {
       type: String,
-      enum: ["pendiente", "confirmada", "cancelada"],
+      enum: ["pendiente", "confirmada", "rechazada", "cancelada"],
       default: "pendiente",
     },
     fechaCreacion: { type: Date, default: Date.now },
@@ -49,5 +51,4 @@ const Reserva = mongoose.model("Reserva", reservaSchema, "reservas");
 
 export { Reserva };
 export default Reserva;
-
 

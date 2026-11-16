@@ -17,14 +17,21 @@ import {
 } from "./auth.js";
 import {
   Foto,
+  LogAuditoria,
   MetodoPago,
+  Notificacion,
   Pago,
   Propiedad,
   Reserva,
   Usuario,
 } from "./models.js";
 import { ensureTestData } from "./seed-data.js";
-import { enviarMail, mailBienvenida, mailReserva } from "./mailer.js";
+import {
+  enviarMail,
+  mailBienvenida,
+  mailEstadoReserva,
+  mailReserva,
+} from "./mailer.js";
 
 const app = express();
 const uploadsDirectory = path.join(
@@ -97,6 +104,18 @@ const todayInGoya = () => {
   );
   return `${parts.year}-${parts.month}-${parts.day}`;
 };
+const reservationHasEnded = (reservation) =>
+  reservation.fechaFin.toISOString().slice(0, 10) < todayInGoya();
+const registrarNotificacion = (usuarioId, mensaje, canal) =>
+  Notificacion.create({ usuarioId, mensaje, canal });
+const registrarAuditoria = ({ usuario, accion, detalle, ip }) =>
+  LogAuditoria.create({
+    usuario: usuario.correo || usuario.nombre || String(usuario._id),
+    rol: usuario.rol,
+    accion,
+    detalle,
+    ip,
+  });
 const uploadedFiles = (req) => (Array.isArray(req.files) ? req.files : []);
 const removeUploadedFiles = async (files) => {
   await Promise.all(
@@ -151,6 +170,36 @@ const addPropertyPhotos = async (properties) => {
       ...property,
       fotos: propertyPhotos,
       foto: propertyPhotos[0]?.archivo || null,
+    };
+  });
+};
+const addPropertyRatings = async (properties) => {
+  if (!properties.length) return properties;
+  const ratings = await Reserva.aggregate([
+    {
+      $match: {
+        propiedad: { $in: properties.map((property) => property._id) },
+        calificacion: { $gte: 1, $lte: 5 },
+        estado: { $nin: ["cancelada", "rechazada"] },
+      },
+    },
+    {
+      $group: {
+        _id: "$propiedad",
+        promedioCalificacion: { $avg: "$calificacion" },
+        cantidadResenas: { $sum: 1 },
+      },
+    },
+  ]);
+  const ratingsByProperty = new Map(
+    ratings.map((rating) => [String(rating._id), rating])
+  );
+  return properties.map((property) => {
+    const rating = ratingsByProperty.get(String(property._id));
+    return {
+      ...property,
+      promedioCalificacion: rating?.promedioCalificacion || 0,
+      cantidadResenas: rating?.cantidadResenas || 0,
     };
   });
 };
@@ -319,6 +368,43 @@ app.get(
 );
 
 app.get(
+  "/api/notificaciones",
+  authenticate,
+  asyncRoute(async (req, res) => {
+    const notifications = await Notificacion.find({ usuarioId: req.user._id })
+      .sort({ fecha: -1 })
+      .limit(50)
+      .lean();
+    res.json(notifications);
+  })
+);
+
+app.put(
+  "/api/notificaciones/leer",
+  authenticate,
+  asyncRoute(async (req, res) => {
+    const result = await Notificacion.updateMany(
+      { usuarioId: req.user._id, leida: false },
+      { $set: { leida: true } }
+    );
+    res.json({ modificadas: result.modifiedCount });
+  })
+);
+
+app.get(
+  "/api/auditoria",
+  authenticate,
+  requireRole("admin"),
+  asyncRoute(async (_req, res) => {
+    const entries = await LogAuditoria.find()
+      .sort({ fecha: -1 })
+      .limit(50)
+      .lean();
+    res.json(entries);
+  })
+);
+
+app.get(
   "/api/propiedades",
   asyncRoute(async (_req, res) => {
     const properties = await Propiedad.find({ estado: "disponible" })
@@ -326,7 +412,7 @@ app.get(
       .sort({ _id: -1 })
       .lean();
     const withPhotos = await addPropertyPhotos(properties);
-    res.json(withPhotos);
+    res.json(await addPropertyRatings(withPhotos));
   })
 );
 
@@ -346,7 +432,8 @@ app.get(
       return res.status(404).json({ error: "Propiedad no encontrada" });
     }
     const photos = await Foto.find({ propiedad: property._id }).lean();
-    res.json({ ...property, fotos: photos });
+    const [ratedProperty] = await addPropertyRatings([{ ...property, fotos: photos }]);
+    res.json(ratedProperty);
   })
 );
 
@@ -358,7 +445,7 @@ app.get(
     }
     const reservations = await Reserva.find({
       propiedad: req.params.propiedadId,
-      estado: { $ne: "cancelada" },
+      estado: { $nin: ["cancelada", "rechazada"] },
     }).select("fechaInicio fechaFin estado");
     res.json(
       reservations.map((reservation) => ({
@@ -400,7 +487,7 @@ app.post(
     }
     const overlap = await Reserva.exists({
       propiedad: property._id,
-      estado: { $ne: "cancelada" },
+      estado: { $nin: ["cancelada", "rechazada"] },
       fechaInicio: { $lt: end },
       fechaFin: { $gt: start },
     });
@@ -448,6 +535,13 @@ app.post(
         estado: payment.estado,
       },
     });
+    void registrarNotificacion(
+      property.propietario,
+      `Nueva solicitud de reserva para ${property.titulo}.`,
+      "reserva_pendiente"
+    ).catch((error) =>
+      console.error("No se pudo crear la notificacion de reserva:", error.message)
+    );
     if (req.user.correo) {
       const mail = mailReserva({
         usuario: req.user,
@@ -480,8 +574,78 @@ app.get(
         checkOut: reservation.fechaFin,
         montoTotal: reservation.montoTotal,
         estado: reservation.estado,
+        calificacion: reservation.calificacion ?? null,
+        comentario: reservation.comentario || "",
+        puedeCalificar:
+          reservation.estado === "confirmada" &&
+          reservationHasEnded(reservation),
       }))
     );
+  })
+);
+
+app.post(
+  "/api/reservas/:id/calificar",
+  authenticate,
+  requireRole("inquilino"),
+  asyncRoute(async (req, res) => {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: "ID de reserva invalido" });
+    }
+    const { calificacion, comentario = "" } = req.body || {};
+    if (
+      typeof calificacion !== "number" ||
+      !Number.isInteger(calificacion) ||
+      calificacion < 1 ||
+      calificacion > 5 ||
+      typeof comentario !== "string" ||
+      comentario.trim().length > 300
+    ) {
+      return res.status(400).json({
+        error: "La calificacion debe ser de 1 a 5 y el comentario no superar 300 caracteres",
+      });
+    }
+
+    const reservation = await Reserva.findOne({
+      _id: req.params.id,
+      turista: req.user._id,
+    });
+    if (!reservation) {
+      return res.status(404).json({ error: "Reserva no encontrada" });
+    }
+    if (reservation.estado !== "confirmada") {
+      return res.status(409).json({
+        error: "Solo se pueden calificar reservas confirmadas y finalizadas",
+      });
+    }
+    if (!reservationHasEnded(reservation)) {
+      return res.status(409).json({ error: "Podras calificar la reserva despues de la fecha de salida" });
+    }
+    if (reservation.calificacion != null) {
+      return res.status(409).json({ error: "Esta reserva ya fue calificada" });
+    }
+
+    const ratedReservation = await Reserva.findOneAndUpdate(
+      {
+        _id: reservation._id,
+        turista: req.user._id,
+        calificacion: null,
+        estado: "confirmada",
+        fechaFin: { $lt: parseDateOnly(todayInGoya()) },
+      },
+      { $set: { calificacion, comentario: comentario.trim() } },
+      { returnDocument: "after", runValidators: true }
+    );
+    if (!ratedReservation) {
+      return res.status(409).json({
+        error: "Esta reserva ya fue calificada o no se puede calificar",
+      });
+    }
+    res.json({
+      mensaje: "Gracias por calificar tu estadia",
+      calificacion: ratedReservation.calificacion,
+      comentario: ratedReservation.comentario,
+    });
   })
 );
 
@@ -513,6 +677,74 @@ app.put(
   })
 );
 
+app.put(
+  "/api/reservas/:id/accion",
+  authenticate,
+  requireRole("anfitrion"),
+  asyncRoute(async (req, res) => {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: "ID de reserva invalido" });
+    }
+    const estados = { confirmar: "confirmada", rechazar: "rechazada" };
+    const estado = estados[req.body?.accion];
+    if (!estado) {
+      return res.status(400).json({ error: "Accion de reserva invalida" });
+    }
+
+    const reservation = await Reserva.findById(req.params.id)
+      .populate("propiedad", "titulo propietario")
+      .populate("turista", "nombre apellido correo telefono");
+    if (!reservation) {
+      return res.status(404).json({ error: "Reserva no encontrada" });
+    }
+    if (String(reservation.propiedad?.propietario) !== String(req.user._id)) {
+      return res.status(403).json({ error: "No podes gestionar esta reserva" });
+    }
+    if (reservation.estado !== "pendiente") {
+      return res.status(409).json({ error: "La reserva ya no esta pendiente" });
+    }
+
+    reservation.estado = estado;
+    await reservation.save();
+    void registrarNotificacion(
+      reservation.turista._id,
+      `Tu reserva para ${reservation.propiedad.titulo} fue ${
+        estado === "confirmada" ? "confirmada" : "rechazada"
+      }.`,
+      `reserva_${estado}`
+    ).catch((error) =>
+      console.error("No se pudo crear la notificacion de reserva:", error.message)
+    );
+    void registrarAuditoria({
+      usuario: req.user,
+      accion: "UPDATE_RESERVA",
+      detalle: `Reserva ${reservation._id}: ${estado}`,
+      ip: req.ip,
+    }).catch((error) =>
+      console.error("No se pudo registrar la accion de reserva:", error.message)
+    );
+    const mensaje = estado === "confirmada"
+      ? "Reserva confirmada correctamente"
+      : "Reserva rechazada correctamente";
+    res.json({
+      mensaje,
+      reserva: { id: reservation._id, estado: reservation.estado },
+    });
+
+    if (reservation.turista?.correo) {
+      const mail = mailEstadoReserva({
+        usuario: reservation.turista,
+        propiedad: reservation.propiedad,
+        reserva: reservation,
+        estado,
+      });
+      void enviarMail(mail.para, mail.asunto, mail.html).catch((error) =>
+        console.error("No se pudo enviar la actualización de la reserva:", error.message)
+      );
+    }
+  })
+);
+
 app.get(
   "/api/propietario/panel",
   authenticate,
@@ -525,7 +757,7 @@ app.get(
       estado: { $ne: "cancelada" },
     })
       .populate("propiedad", "titulo precioPorNoche")
-      .populate("turista", "nombre apellido telefono")
+      .populate("turista", "nombre apellido telefono correo")
       .sort({ fechaCreacion: -1 })
       .lean();
     const stats = properties.map((property) => {
