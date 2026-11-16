@@ -1,13 +1,12 @@
 ﻿import React, { useState } from "react";
+import { api } from "../api.js";
 
-export default function Reservas({ usuario, propiedades, onNotification }) {
+export default function Reservas({ usuario, propiedades }) {
   const listaPropiedades = Array.isArray(propiedades) ? propiedades : [];
   const [mensaje, setMensaje] = useState("");
-  const [error, setError] = useState("");
   const [form, setForm] = useState({
-    propiedadId: listaPropiedades[0]?._id || listaPropiedades[0]?.id || "",
+    propiedadId: listaPropiedades[0]?.id || "",
     nombre: "",
-    correo: "",
     telefono: "",
     desde: "",
     hasta: "",
@@ -21,29 +20,15 @@ export default function Reservas({ usuario, propiedades, onNotification }) {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setMensaje("");
-    setError("");
 
     try {
-      const res = await fetch("/api/reservas", {
+      const datos = await api("/api/reservas", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          propiedadId: form.propiedadId,
-          checkIn: form.desde,
-          checkOut: form.hasta,
-          datosTurista: {
-            nombre: form.nombre.trim(),
-            correo: form.correo.trim(),
-            telefono: form.telefono.trim(),
-          },
-        }),
+        body: JSON.stringify(form),
       });
-      const datos = await res.json();
-      if (!res.ok) throw new Error(datos.error || "No se pudo registrar la reserva");
-      setMensaje(`${datos.mensaje}. Pendiente de confirmación.`);
-      onNotification?.();
-    } catch (submitError) {
-      setError(submitError.message || "No se pudo conectar con el servidor");
+      setMensaje(datos.mensaje);
+    } catch (requestError) {
+      setMensaje(requestError.message || "No se pudo conectar con el servidor");
     }
   };
 
@@ -62,10 +47,10 @@ export default function Reservas({ usuario, propiedades, onNotification }) {
       ) : (
         <div className="cards">
           {listaPropiedades.map((p) => (
-            <div className="card" key={p._id || p.id}>
-              <h3>{p.titulo || p.nombre}</h3>
+            <div className="card" key={p.id}>
+              <h3>{p.nombre}</h3>
               <p>{p.descripcion}</p>
-              <p className="precio">${p.precioPorNoche ?? p.precioPorDia} por día</p>
+              <p className="precio">${p.precioPorDia} por dia</p>
             </div>
           ))}
         </div>
@@ -80,8 +65,8 @@ export default function Reservas({ usuario, propiedades, onNotification }) {
           required
         >
           {listaPropiedades.map((p) => (
-            <option key={p._id || p.id} value={p._id || p.id}>
-              {p.titulo || p.nombre}
+            <option key={p.id} value={p.id}>
+              {p.nombre}
             </option>
           ))}
         </select>
@@ -93,20 +78,10 @@ export default function Reservas({ usuario, propiedades, onNotification }) {
           required
         />
         <input
-          type="email"
-          name="correo"
-          placeholder="Correo electrónico"
-          value={form.correo}
-          onChange={handleChange}
-          required
-        />
-        <input
-          type="tel"
           name="telefono"
-          placeholder="Teléfono"
+          placeholder="Telefono (opcional)"
           value={form.telefono}
           onChange={handleChange}
-          required
         />
         <label>
           Desde:{" "}
@@ -119,8 +94,6 @@ export default function Reservas({ usuario, propiedades, onNotification }) {
         <button className="btn-primary">Guardar reserva</button>
       </form>
       {mensaje && <p className="ok">{mensaje}</p>}
-      {error && <p className="error">{error}</p>}
     </section>
   );
 }
-

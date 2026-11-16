@@ -1,12 +1,12 @@
 import "dotenv/config";
 import mongoose from "mongoose";
 
-const uri = process.env.MONGO_URI;
+const uri =
+  process.env.MONGODB_URI || "mongodb://127.0.0.1:27017/goya_quintas_test";
 
 try {
-  if (!uri) throw new Error("Falta configurar MONGO_URI en el entorno");
   await mongoose.connect(uri);
-  console.log("Conectado a MongoDB");
+  console.log("Conectado a la base configurada.");
 
   const collections = await mongoose.connection.db.listCollections().toArray();
   console.log("Colecciones disponibles:");
@@ -15,10 +15,9 @@ try {
   } else {
     collections.forEach((collection) => console.log("-", collection.name));
   }
-
-  await mongoose.disconnect();
-  process.exit(0);
 } catch (error) {
-  console.error("Error critico al conectar a MongoDB:", error);
-  process.exit(1);
+  console.error("Error critico al conectar a MongoDB:", error.message);
+  process.exitCode = 1;
+} finally {
+  await mongoose.disconnect();
 }

@@ -1,7 +1,5 @@
-﻿import React, { useEffect, useMemo, useState } from "react";
-import { MOCK_RESERVATIONS } from "../mockData.js";
-
-const esIdMongo = (id) => /^[a-f\d]{24}$/i.test(String(id || ""));
+import React, { useEffect, useMemo, useState } from "react";
+import { api } from "../api.js";
 
 // Genera la grilla de un mes: de lunes a domingo
 function grillaMes(anio, mes) {
@@ -19,6 +17,12 @@ const MESES = [
   "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
   "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
 ];
+const fechaLocalParaInput = () => {
+  const hoy = new Date();
+  const mes = String(hoy.getMonth() + 1).padStart(2, "0");
+  const dia = String(hoy.getDate()).padStart(2, "0");
+  return `${hoy.getFullYear()}-${mes}-${dia}`;
+};
 
 function Calendario({ reservas = [] }) {
   const hoy = new Date();
@@ -35,8 +39,8 @@ function Calendario({ reservas = [] }) {
       const ini = new Date(r.checkIn);
       const fin = new Date(r.checkOut);
       if (Number.isNaN(ini.getTime()) || Number.isNaN(fin.getTime())) continue;
-      for (let d = new Date(ini); d <= fin; d.setDate(d.getDate() + 1)) {
-        set.add(`${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`);
+      for (let d = new Date(ini); d < fin; d.setUTCDate(d.getUTCDate() + 1)) {
+        set.add(`${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`);
       }
     }
     return set;
@@ -53,11 +57,27 @@ function Calendario({ reservas = [] }) {
   return (
     <div className="calendario">
       <div className="cal-header">
-        <button onClick={() => avanzar(-1)}>â€¹</button>
+        <button
+          type="button"
+          onClick={() => avanzar(-1)}
+          aria-label="Mes anterior"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m15 18-6-6 6-6" />
+          </svg>
+        </button>
         <strong>
           {MESES[mes]} {anio}
         </strong>
-        <button onClick={() => avanzar(1)}>â€º</button>
+        <button
+          type="button"
+          onClick={() => avanzar(1)}
+          aria-label="Mes siguiente"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m9 18 6-6-6-6" />
+          </svg>
+        </button>
       </div>
       <div className="cal-grid">
         {["L", "M", "M", "J", "V", "S", "D"].map((d, i) => (
@@ -90,7 +110,8 @@ function Calendario({ reservas = [] }) {
   );
 }
 
-export default function VistaCliente({ usuario, propiedades, onNotification }) {
+export default function VistaCliente({ usuario, onNotification }) {
+  const [propiedades, setPropiedades] = useState([]);
   const [seleccionada, setSeleccionada] = useState("");
   const [reservas, setReservas] = useState([]);
   const [mensaje, setMensaje] = useState("");
@@ -99,91 +120,80 @@ export default function VistaCliente({ usuario, propiedades, onNotification }) {
   const [form, setForm] = useState({ desde: "", hasta: "", metodoPago: "efectivo" });
   const [misReservas, setMisReservas] = useState([]);
   const [cancelandoId, setCancelandoId] = useState(null);
+  const [calificandoId, setCalificandoId] = useState(null);
+  const [calificaciones, setCalificaciones] = useState({});
+  const [calificacionesEnVista, setCalificacionesEnVista] = useState({});
+  const [comentarios, setComentarios] = useState({});
   const [confirmarId, setConfirmarId] = useState(null);
-
-  const cargarReservas = async (id) => {
-    if (!id) return;
-    if (esIdMongo(id)) {
-      try {
-        const res = await fetch(`/api/reservas/${id}`);
-        const datos = await res.json();
-        if (!res.ok) throw new Error(datos.error || "No se pudieron cargar las reservas");
-        setReservas(datos);
-      } catch (loadError) {
-        setError(loadError.message || "No se pudo conectar con el servidor");
-      }
-      return;
-    }
-    const propertyReservations = MOCK_RESERVATIONS.filter(
-      (r) =>
-        String(r.propiedadId) === String(id) &&
-        !["cancelada", "rechazada"].includes(r.estado)
-    );
-    setReservas(propertyReservations);
-  };
+  const [cargando, setCargando] = useState(true);
 
   const cargarMisReservas = async () => {
-    if (!usuario?.id) return;
-    if (esIdMongo(usuario.id)) {
-      try {
-        const res = await fetch(`/api/reservas/turista/${usuario.id}`);
-        const datos = await res.json();
-        if (!res.ok) throw new Error(datos.error || "No se pudieron cargar tus reservas");
-        setMisReservas(datos);
-      } catch (loadError) {
-        setError(loadError.message || "No se pudo conectar con el servidor");
-      }
-      return;
-    }
-    const mine = MOCK_RESERVATIONS.filter((r) => String(r.turista?._id) === String(usuario.id));
+    const mine = await api("/api/reservas/mis");
     setMisReservas(mine);
   };
 
-  const cancelarReserva = async (id) => {
-    setCancelandoId(id);
-    if (esIdMongo(id) && esIdMongo(usuario?.id)) {
-      try {
-        const res = await fetch(`/api/reservas/${id}/cancelar`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ turistaId: usuario.id }),
-        });
-        const datos = await res.json();
-        if (!res.ok) throw new Error(datos.error || "No se pudo cancelar la reserva");
-      } catch (cancelError) {
-        setError(cancelError.message || "No se pudo conectar con el servidor");
-        setCancelandoId(null);
-        return;
-      }
-    } else {
-      const index = MOCK_RESERVATIONS.findIndex((r) => String(r.id || r._id) === String(id));
-      if (index >= 0) MOCK_RESERVATIONS[index].estado = "cancelada";
+  const enviarCalificacion = async (reservaId) => {
+    const calificacion = calificaciones[reservaId];
+    if (!calificacion) return;
+    setError("");
+    setCalificandoId(reservaId);
+    try {
+      await api(`/api/reservas/${reservaId}/calificar`, {
+        method: "POST",
+        body: JSON.stringify({
+          calificacion,
+          comentario: comentarios[reservaId] || "",
+        }),
+      });
+      await cargarMisReservas();
+      setMensaje("Gracias por calificar tu estadía.");
+    } catch (requestError) {
+      setError(requestError.message || "No se pudo enviar la calificación");
+    } finally {
+      setCalificandoId(null);
     }
-    setMisReservas((prev) =>
-      prev.map((r) => (String(r.id || r._id) === String(id) ? { ...r, estado: "cancelada" } : r))
-    );
-    setReservas((prev) => prev.filter((r) => String(r.id || r._id) !== String(id)));
-    setMensaje("Reserva cancelada correctamente");
-    setCancelandoId(null);
-    setConfirmarId(null);
   };
 
   useEffect(() => {
-    cargarReservas(seleccionada);
-  }, [seleccionada]);
+    let active = true;
+    Promise.all([api("/api/propiedades"), api("/api/reservas/mis")])
+      .then(([properties, mine]) => {
+        if (!active) return;
+        setPropiedades(properties);
+        setMisReservas(mine);
+        setSeleccionada(properties[0]?._id || "");
+      })
+      .catch((requestError) => {
+        if (active) setError(requestError.message || "No se pudieron cargar los datos");
+      })
+      .finally(() => {
+        if (active) setCargando(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
-    cargarMisReservas();
-  }, [usuario?.id]);
-
-  // Si cambia la lista de propiedades (ej: al loguear) ajusto la seleccion
-  useEffect(() => {
-    const lista = Array.isArray(propiedades) ? propiedades : [];
-    if (lista.length && !lista.some((p) => p._id === seleccionada)) {
-      setSeleccionada(lista[0]._id);
+    if (!seleccionada) {
+      setReservas([]);
+      return;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [propiedades]);
+    let active = true;
+    api(`/api/propiedades/${seleccionada}/reservas`)
+      .then((items) => {
+        if (active) {
+          setReservas(items);
+          setError("");
+        }
+      })
+      .catch((requestError) => {
+        if (active) setError(requestError.message || "No se pudo consultar la disponibilidad");
+      });
+    return () => {
+      active = false;
+    };
+  }, [seleccionada]);
 
   const handleChange = (e) =>
     setForm({ ...form, [e.target.name]: e.target.value });
@@ -192,68 +202,25 @@ export default function VistaCliente({ usuario, propiedades, onNotification }) {
     e.preventDefault();
     setMensaje("");
     setError("");
-
-    if (!usuario?.id || !seleccionada) {
-      setError("Faltan datos para crear la reserva");
-      return;
-    }
-
-    const propiedad = listaPropiedades.find((p) => p._id === seleccionada);
-    if (!propiedad) {
-      setError("Propiedad no encontrada");
-      return;
-    }
-
-    const noches = Math.max(
-      1,
-      Math.round((new Date(form.hasta) - new Date(form.desde)) / 86400000)
-    );
-    const nuevaReserva = {
-      id: `r-${Date.now()}`,
-      _id: `r-${Date.now()}`,
-      propiedadId: seleccionada,
-      propiedadTitulo: propiedad.titulo,
-      turista: {
-        _id: usuario.id,
-        nombre: usuario.nombre,
-        apellido: usuario.apellido,
-        telefono: usuario.telefono,
-      },
-      checkIn: form.desde,
-      checkOut: form.hasta,
-      montoTotal: noches * (propiedad.precioPorNoche || 0),
-      estado: "pendiente",
-    };
-
     try {
-      if (esIdMongo(usuario.id) && esIdMongo(seleccionada)) {
-        const res = await fetch("/api/reservas", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            propiedadId: seleccionada,
-            turistaId: usuario.id,
-            checkIn: form.desde,
-            checkOut: form.hasta,
-            metodoPago: form.metodoPago,
-          }),
-        });
-        const datos = await res.json();
-        if (!res.ok) throw new Error(datos.error || "No se pudo registrar la reserva");
-        const reserva = datos.reserva;
-        setReservas((prev) => [...prev, reserva]);
-        setMisReservas((prev) => [...prev, reserva]);
-        onNotification?.();
-        setMensaje("Reserva registrada. Queda pendiente de confirmación por el propietario.");
-      } else {
-        MOCK_RESERVATIONS.push(nuevaReserva);
-        setReservas((prev) => [...prev, nuevaReserva]);
-        setMisReservas((prev) => [...prev, nuevaReserva]);
-        setMensaje("Reserva registrada. Queda pendiente de confirmación por el propietario.");
-      }
+      const result = await api("/api/reservas", {
+        method: "POST",
+        body: JSON.stringify({
+          propiedadId: seleccionada,
+          checkIn: form.desde,
+          checkOut: form.hasta,
+          metodoPago: form.metodoPago,
+        }),
+      });
+      await onNotification?.();
       setForm({ desde: "", hasta: "", metodoPago: "efectivo" });
-    } catch (submitError) {
-      setError(submitError.message || "No se pudo conectar con el servidor");
+      setMensaje(result.mensaje);
+      await Promise.all([
+        cargarMisReservas(),
+        api(`/api/propiedades/${seleccionada}/reservas`).then(setReservas),
+      ]);
+    } catch (requestError) {
+      setError(requestError.message || "No se pudo registrar la reserva");
     }
   };
 
@@ -262,13 +229,31 @@ export default function VistaCliente({ usuario, propiedades, onNotification }) {
 
   const propiedad = listaPropiedades.find((p) => p._id === seleccionada);
 
-  console.log("=== DIAGNÓSTICO CLINE (VistaCliente) ===", { usuario, propiedades, reservas, misReservas });
+  const cancelarReserva = async (id) => {
+    setCancelandoId(id);
+    setError("");
+    try {
+      const result = await api(`/api/reservas/${id}/cancelar`, { method: "PUT" });
+      await Promise.all([
+        cargarMisReservas(),
+        api(`/api/propiedades/${seleccionada}/reservas`).then(setReservas),
+      ]);
+      setMensaje(result.mensaje);
+      setConfirmarId(null);
+    } catch (requestError) {
+      setError(requestError.message || "No se pudo cancelar la reserva");
+    } finally {
+      setCancelandoId(null);
+    }
+  };
   return (
     <section className="cliente">
       <h2>Propiedades disponibles</h2>
       <p className="nota">
         Hola {usuario?.nombre}. Elegi una propiedad para ver disponibilidad y reservar.
       </p>
+      {cargando && <p className="nota">Cargando propiedades y reservas...</p>}
+      {error && <p className="error">{error}</p>}
 
       <div className="propiedades-grid">
         {listaPropiedades.map((p) => (
@@ -312,6 +297,7 @@ export default function VistaCliente({ usuario, propiedades, onNotification }) {
                 <input
                   type="date"
                   name="desde"
+                  min={fechaLocalParaInput()}
                   value={form.desde}
                   onChange={handleChange}
                   required
@@ -322,6 +308,7 @@ export default function VistaCliente({ usuario, propiedades, onNotification }) {
                 <input
                   type="date"
                   name="hasta"
+                  min={form.desde || fechaLocalParaInput()}
                   value={form.hasta}
                   onChange={handleChange}
                   required
@@ -338,11 +325,11 @@ export default function VistaCliente({ usuario, propiedades, onNotification }) {
                 <option value="transferencia_bancaria">Transferencia bancaria</option>
                 <option value="billetera_virtual">Billetera virtual</option>
               </select>
-              <button className="btn-primary">Reservar</button>
+              <button className="btn-primary" disabled={cargando}>Solicitar reserva</button>
             </form>
+            <p className="nota">En esta etapa de prueba el pago queda pendiente; no se realiza ningun cobro.</p>
             </div>
             {mensaje && <p className="ok">{mensaje}</p>}
-            {error && <p className="error">{error}</p>}
           </div>
           <Calendario reservas={reservas} />
         </div>
@@ -362,6 +349,76 @@ export default function VistaCliente({ usuario, propiedades, onNotification }) {
                   <p>Desde: {String(r.checkIn).slice(0, 10)} hasta {String(r.checkOut).slice(0, 10)}</p>
                   <p>Monto: ${Number(r.montoTotal).toLocaleString("es-AR")}</p>
                   <p>Estado: {r.estado}</p>
+                  {r.calificacion != null ? (
+                    <div className="reserva-rating">
+                      <p>
+                        Tu calificación:{" "}
+                        <span
+                          className="rating-stars-display"
+                          aria-label={`${r.calificacion} de 5 estrellas`}
+                        >
+                          {"★".repeat(r.calificacion)}
+                          {"☆".repeat(5 - r.calificacion)}
+                        </span>{" "}
+                        ({r.calificacion}/5)
+                      </p>
+                      {r.comentario && <p className="rating-comment-display">{r.comentario}</p>}
+                    </div>
+                  ) : r.puedeCalificar ? (
+                    <div className="reserva-rating">
+                      <p>¿Cómo fue tu estadía?</p>
+                      <div
+                        className="rating-star-picker"
+                        role="group"
+                        aria-label="Elegir calificación"
+                        onMouseLeave={() =>
+                          setCalificacionesEnVista((current) => ({ ...current, [r.id]: 0 }))
+                        }
+                      >
+                        {[1, 2, 3, 4, 5].map((score) => (
+                          <button
+                            key={score}
+                            type="button"
+                            className={`rating-star-button ${score <= (calificacionesEnVista[r.id] || calificaciones[r.id] || 0) ? "selected" : ""}`}
+                            onClick={() =>
+                              setCalificaciones((current) => ({ ...current, [r.id]: score }))
+                            }
+                            onMouseEnter={() =>
+                              setCalificacionesEnVista((current) => ({ ...current, [r.id]: score }))
+                            }
+                            aria-label={`${score} ${score === 1 ? "estrella" : "estrellas"}`}
+                            aria-pressed={calificaciones[r.id] === score}
+                          >
+                            ★
+                          </button>
+                        ))}
+                      </div>
+                      <label className="rating-comment-label">
+                        Comentario (opcional)
+                        <textarea
+                          value={comentarios[r.id] || ""}
+                          maxLength={300}
+                          rows={2}
+                          onChange={(event) =>
+                            setComentarios((current) => ({
+                              ...current,
+                              [r.id]: event.target.value,
+                            }))
+                          }
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        className="rating-submit-button"
+                        onClick={() => enviarCalificacion(r.id)}
+                        disabled={!calificaciones[r.id] || calificandoId === r.id}
+                      >
+                        {calificandoId === r.id ? "Enviando..." : "Enviar calificación"}
+                      </button>
+                    </div>
+                  ) : !["cancelada", "rechazada"].includes(r.estado) ? (
+                    <p className="rating-pending">Podrás calificarla después de la fecha de salida.</p>
+                  ) : null}
                 </div>
                 {r.estado !== "cancelada" && (
                   <button className="btn-cancelar" onClick={() => setConfirmarId(r.id)} disabled={cancelandoId === r.id}>
@@ -392,4 +449,3 @@ export default function VistaCliente({ usuario, propiedades, onNotification }) {
     </section>
   );
 }
-

@@ -5,49 +5,13 @@ import Registro from "./components/Registro.jsx";
 import VistaCliente from "./components/VistaCliente.jsx";
 import PanelPropietario from "./components/PanelPropietario.jsx";
 import Admin from "./components/Admin.jsx";
-import { MOCK_PROPERTIES } from "./mockData.js";
-
-const esIdMongo = (id) => /^[a-f\d]{24}$/i.test(String(id || ""));
-
-function filtrarNotificaciones(datos, usuario) {
-  const usuarioId = String(usuario?._id || usuario?.id || "").toLowerCase();
-  const usuarioEmail = String(usuario?.email || usuario?.correo || "")
-    .trim()
-    .toLowerCase();
-
-  return datos.filter((notificacion) => {
-    if (!notificacion) return false;
-    const destinatario = notificacion.usuarioId
-      || notificacion.destinatarioId
-      || notificacion.usuario;
-    const destinatarioId = String(
-      destinatario && typeof destinatario === "object"
-        ? destinatario._id || destinatario.id || ""
-        : destinatario || ""
-    ).toLowerCase();
-    const destinatarioEmail = String(
-      notificacion.destinatarioEmail || notificacion.usuarioEmail || ""
-    ).trim().toLowerCase();
-
-    return (
-      (Boolean(usuarioId) && destinatarioId === usuarioId)
-      || (Boolean(usuarioEmail) && destinatarioEmail === usuarioEmail)
-    );
-  });
-}
-
-async function obtenerNotificaciones(usuario) {
-  const usuarioId = usuario?._id || usuario?.id;
-  const res = await fetch(`/api/notificaciones/${usuarioId}`);
-  const datos = await res.json();
-  if (!res.ok) {
-    throw new Error(datos.error || "No se pudieron cargar las notificaciones");
-  }
-  if (!Array.isArray(datos)) {
-    throw new Error("La respuesta de notificaciones no es valida");
-  }
-  return filtrarNotificaciones(datos, usuario);
-}
+import {
+  api,
+  clearAuthToken,
+  clearLegacyAuthData,
+  getAuthToken,
+  setAuthToken,
+} from "./api.js";
 
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -63,7 +27,7 @@ class ErrorBoundary extends React.Component {
   render() {
     if (this.state.hasError) {
       return (
-        <div style={{ padding: "40px", background: "#f3f0f7", height: "100vh" }}>
+        <div className="loading-state">
           <h2>Error en el panel</h2>
           <pre>{this.state.error?.message}</pre>
         </div>
@@ -75,178 +39,118 @@ class ErrorBoundary extends React.Component {
 export default function App() {
   // vista: "home" | "login" | "registro" | "panel"
   // El contenido del "panel" depende del rol del usuario
-  const [vista, setVista] = useState(() => {
-    try {
-      return localStorage.getItem("user") ? "panel" : "home";
-    } catch {
-      return "home";
-    }
-  });
-  const [usuario, setUsuario] = useState(() => {
-    try {
-      const saved = localStorage.getItem("user");
-      return saved ? JSON.parse(saved) : null;
-    } catch {
-      return null;
-    }
-  });
-  const [propiedades, setPropiedades] = useState([]);
+  const [vista, setVista] = useState("home");
+  const [usuario, setUsuario] = useState(null);
+  const [authChecking, setAuthChecking] = useState(true);
   const [notificaciones, setNotificaciones] = useState([]);
   const [notificacionesAbiertas, setNotificacionesAbiertas] = useState(false);
   const [errorNotificaciones, setErrorNotificaciones] = useState("");
-  const [errorPropiedades, setErrorPropiedades] = useState("");
+  const [temaOscuro, setTemaOscuro] = useState(() => {
+    try {
+      return localStorage.getItem("theme") === "dark";
+    } catch {
+      return false;
+    }
+  });
 
-  const handleLogin = (datos) => {
+  useEffect(() => {
+    document.documentElement.dataset.theme = temaOscuro ? "dark" : "light";
+    try {
+      localStorage.setItem("theme", temaOscuro ? "dark" : "light");
+    } catch {
+      // El tema sigue funcionando aunque el navegador no permita persistirlo.
+    }
+  }, [temaOscuro]);
+
+  useEffect(() => {
+    clearLegacyAuthData();
+    if (!getAuthToken()) {
+      setAuthChecking(false);
+      return;
+    }
+    api("/api/auth/me")
+      .then(({ usuario: restoredUser }) => {
+        setUsuario(restoredUser);
+        setVista("panel");
+      })
+      .catch(() => clearAuthToken())
+      .finally(() => setAuthChecking(false));
+  }, []);
+
+  const handleLogin = async (datos) => {
     const usuarioLogueado = datos.usuario || datos;
+    setAuthToken(datos.token);
     setUsuario(usuarioLogueado);
     setVista("panel");
-    setErrorPropiedades("");
-    try {
-      localStorage.setItem("user", JSON.stringify(usuarioLogueado));
-    } catch {
-      // ignore
-    }
-
-    if (esIdMongo(usuarioLogueado?.id)) {
-      setPropiedades([]);
-      setErrorPropiedades("");
-    } else {
-      const props = MOCK_PROPERTIES;
-      setPropiedades(
-        usuarioLogueado?.rol === "inquilino"
-          ? props
-          : props.filter((p) => p.propietario?._id === usuarioLogueado?.id)
-      );
-    }
   };
-
-  useEffect(() => {
-    if (!esIdMongo(usuario?.id) || usuario.rol !== "inquilino") return undefined;
-    let activo = true;
-    const cargarPropiedades = async () => {
-      try {
-        const res = await fetch("/api/propiedades");
-        const datos = await res.json();
-        if (!res.ok) throw new Error(datos.error || "No se pudieron cargar las propiedades");
-        if (activo) {
-          setPropiedades(datos);
-          setErrorPropiedades("");
-        }
-      } catch (error) {
-        if (activo) {
-          setPropiedades([]);
-          setErrorPropiedades(error.message || "No se pudo conectar con el servidor");
-        }
-      }
-    };
-    cargarPropiedades();
-    return () => {
-      activo = false;
-    };
-  }, [usuario?.id, usuario?.rol]);
 
   const handleLogout = () => {
+    clearAuthToken();
     setUsuario(null);
-    setPropiedades([]);
     setNotificaciones([]);
+    setNotificacionesAbiertas(false);
     setVista("home");
-    try {
-      localStorage.removeItem("user");
-    } catch {
-      // ignore
-    }
   };
-
-  useEffect(() => {
-    if (vista !== "panel") return;
-    if (!usuario) {
-      setVista("login");
-      return;
-    }
-    if (!["inquilino", "anfitrion", "admin"].includes(usuario.rol)) {
-      setUsuario(null);
-      setPropiedades([]);
-      setNotificaciones([]);
-      setVista("home");
-      try {
-        localStorage.removeItem("user");
-      } catch {
-        // ignore
-      }
-    }
-  }, [vista, usuario]);
 
   const actualizarNotificaciones = async () => {
-    const usuarioId = usuario?._id || usuario?.id;
-    if (esIdMongo(usuarioId)) {
-      try {
-        const datos = await obtenerNotificaciones(usuario);
-        setNotificaciones(datos);
-        setErrorNotificaciones("");
-      } catch (error) {
-        setErrorNotificaciones(error.message || "No se pudo conectar con el servidor");
-      }
-      return;
+    if (!usuario) return;
+    try {
+      const datos = await api("/api/notificaciones");
+      setNotificaciones(datos);
+      setErrorNotificaciones("");
+    } catch (requestError) {
+      setErrorNotificaciones(requestError.message || "No se pudieron cargar las notificaciones");
     }
-    setNotificaciones([]);
   };
 
   useEffect(() => {
-    const usuarioId = usuario?._id || usuario?.id;
-    setNotificaciones([]);
-    setErrorNotificaciones("");
-    if (!esIdMongo(usuarioId)) {
+    if (!usuario) {
+      setNotificaciones([]);
       return undefined;
     }
-
-    let activo = true;
-    const cargarNotificaciones = async () => {
+    let active = true;
+    const cargar = async () => {
       try {
-        const datos = await obtenerNotificaciones(usuario);
-        if (activo) {
+        const datos = await api("/api/notificaciones");
+        if (active) {
           setNotificaciones(datos);
           setErrorNotificaciones("");
         }
-      } catch (error) {
-        if (activo) setErrorNotificaciones(error.message || "No se pudo conectar con el servidor");
+      } catch (requestError) {
+        if (active) {
+          setErrorNotificaciones(
+            requestError.message || "No se pudieron cargar las notificaciones"
+          );
+        }
       }
     };
-
-    cargarNotificaciones();
-    const intervalo = window.setInterval(cargarNotificaciones, 30000);
+    void cargar();
+    const intervalId = window.setInterval(cargar, 30000);
     return () => {
-      activo = false;
-      window.clearInterval(intervalo);
+      active = false;
+      window.clearInterval(intervalId);
     };
   }, [usuario?._id, usuario?.id]);
 
   const alternarNotificaciones = async () => {
     const abrir = !notificacionesAbiertas;
     setNotificacionesAbiertas(abrir);
-    const usuarioId = usuario?._id || usuario?.id;
-    if (!abrir || !esIdMongo(usuarioId)) return;
-
+    if (!abrir || !notificaciones.some((item) => !item.leida)) return;
     try {
-      const res = await fetch(`/api/notificaciones/leer/${usuarioId}`, {
-        method: "PUT",
-      });
-      const datos = await res.json();
-      if (!res.ok) {
-        throw new Error(datos.error || "No se pudieron marcar las notificaciones como leidas");
-      }
-      setNotificaciones((actuales) =>
-        actuales.map((item) => ({ ...item, leida: true }))
-      );
+      await api("/api/notificaciones/leer", { method: "PUT" });
+      setNotificaciones((items) => items.map((item) => ({ ...item, leida: true })));
       setErrorNotificaciones("");
-    } catch (error) {
-      setErrorNotificaciones(error.message || "No se pudo conectar con el servidor");
+    } catch (requestError) {
+      setErrorNotificaciones(
+        requestError.message || "No se pudieron marcar las notificaciones como leídas"
+      );
     }
   };
 
   const panelPorRol = () => {
     if (!usuario || !usuario.rol) {
       return (
-        <div style={{ padding: "40px", background: "#f3f0f7", height: "100vh" }}>
+        <div className="loading-state">
           Cargando panel de GoyaQuintas...
         </div>
       );
@@ -254,23 +158,46 @@ export default function App() {
     if (usuario.rol === "inquilino")
       return (
         <ErrorBoundary>
-          <VistaCliente usuario={usuario} propiedades={propiedades} onNotification={actualizarNotificaciones} />
+          <VistaCliente usuario={usuario} onNotification={actualizarNotificaciones} />
         </ErrorBoundary>
       );
     if (usuario.rol === "admin")
       return <Admin usuario={usuario} irAReservas={() => setVista("panel")} />;
     if (usuario.rol === "anfitrion")
       return <PanelPropietario usuario={usuario} onNotification={actualizarNotificaciones} />;
-    return null;
+    return (
+      <div className="loading-state">
+        Cargando panel de GoyaQuintas...
+      </div>
+    );
   };
 
   return (
     <div className="app">
       <nav className="navbar">
         <span className="logo" onClick={() => setVista("home")}>
+          <img src="/images/goya-recibe-logo.png" alt="" aria-hidden="true" />
           Goya Recibe
         </span>
-        <div>
+        <div className="navbar-actions">
+          <button
+            className="theme-toggle"
+            type="button"
+            onClick={() => setTemaOscuro((actual) => !actual)}
+            aria-label={`Cambiar a modo ${temaOscuro ? "claro" : "oscuro"}`}
+            title={`Cambiar a modo ${temaOscuro ? "claro" : "oscuro"}`}
+          >
+            {temaOscuro ? (
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="12" cy="12" r="4" />
+                <path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M20.9 13A9 9 0 0 1 11 3.1 9 9 0 1 0 20.9 13Z" />
+              </svg>
+            )}
+          </button>
           <button onClick={() => setVista("home")}>Home</button>
           {usuario ? (
             <>
@@ -311,12 +238,10 @@ export default function App() {
                     ) : (
                       <ul>
                         {notificaciones.map((item) => (
-                          <li key={item._id}>
+                          <li key={item._id} className={item.leida ? "" : "unread"}>
                             <span>{item.mensaje}</span>
-                            <time>
-                              {(item.fecha || item.fechaCreacion)
-                                ? new Date(item.fecha || item.fechaCreacion).toLocaleString("es-AR")
-                                : ""}
+                            <time dateTime={item.fecha}>
+                              {new Date(item.fecha).toLocaleString("es-AR")}
                             </time>
                           </li>
                         ))}
@@ -336,15 +261,27 @@ export default function App() {
         </div>
       </nav>
 
-      {vista === "home" && <Home irALogin={() => setVista("login")} usuario={usuario} />}
-      {vista === "login" && <Login onLogin={handleLogin} />}
-      {vista === "registro" && (
-        <Registro onRegistro={handleLogin} irALogin={() => setVista("login")} />
+      {authChecking ? (
+        <p className="nota">Verificando sesión...</p>
+      ) : (
+        <>
+          {vista === "home" && (
+            <Home
+              irALogin={() => setVista("login")}
+              usuario={usuario}
+            />
+          )}
+          {vista === "login" && <Login onLogin={handleLogin} />}
+          {vista === "registro" && (
+            <Registro onRegistro={handleLogin} irALogin={() => setVista("login")} />
+          )}
+          {vista === "panel" && panelPorRol()}
+        </>
       )}
-      {errorPropiedades && <p className="error app-error">{errorPropiedades}</p>}
-      {vista === "panel" && panelPorRol()}
+      <footer className="site-footer">
+        <p>&copy; 2026 Goya Recibe. Todos los derechos reservados.</p>
+        <p>Goya, Corrientes - Argentina</p>
+      </footer>
     </div>
   );
 }
-
-

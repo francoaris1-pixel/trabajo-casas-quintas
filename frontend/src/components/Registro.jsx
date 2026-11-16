@@ -1,4 +1,5 @@
 ﻿import React, { useState } from "react";
+import { api } from "../api.js";
 
 export default function Registro({ onRegistro, irALogin }) {
   const [form, setForm] = useState({
@@ -21,36 +22,45 @@ export default function Registro({ onRegistro, irALogin }) {
   const handleChange = (e) =>
     setForm({ ...form, [e.target.name]: e.target.value });
 
-  const correoOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.correo);
-  const contrasenaOk = form.contrasena.length >= 6;
+  const correoNormalizado = form.correo.trim();
+  const telefonoNormalizado = form.telefono.trim().replace(/[^\d+]/g, "");
+  const correoOk =
+    !correoNormalizado || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correoNormalizado);
+  const telefonoOk =
+    !telefonoNormalizado || /^\+?\d{7,15}$/.test(telefonoNormalizado);
+  const contrasenaOk = form.contrasena.length >= 8;
   const nombreInvalido = touched.nombre && !form.nombre.trim();
   const correoInvalido = touched.correo && !correoOk;
-  const telefonoInvalido = touched.telefono && !form.telefono.trim();
+  const telefonoInvalido = touched.telefono && !telefonoOk;
   const contrasenaInvalida = touched.contrasena && !contrasenaOk;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
     setTouched({ nombre: true, correo: true, telefono: true, contrasena: true });
-    if (!form.nombre.trim() || !correoOk || !form.telefono.trim() || !contrasenaOk) {
+    if (
+      !form.nombre.trim() ||
+      !correoOk ||
+      !telefonoOk ||
+      (!correoNormalizado && !telefonoNormalizado) ||
+      !contrasenaOk
+    ) {
       setError("Revisa los campos marcados.");
       return;
     }
     setCargando(true);
     try {
-      const res = await fetch("/api/registro", {
+      const datos = await api("/api/registro", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        body: JSON.stringify({
+          ...form,
+          correo: correoNormalizado || undefined,
+          telefono: telefonoNormalizado || undefined,
+        }),
       });
-      const datos = await res.json();
-      if (!res.ok) {
-        setError(datos.error || "Error al registrarse");
-      } else {
-        onRegistro(datos);
-      }
-    } catch {
-      setError("No se pudo conectar con el servidor");
+      await onRegistro(datos);
+    } catch (requestError) {
+      setError(requestError.message || "No se pudo conectar con el servidor");
     } finally {
       setCargando(false);
     }
@@ -60,7 +70,7 @@ export default function Registro({ onRegistro, irALogin }) {
     <div className="auth-page">
       <div className="auth-card">
         <h2>Crear cuenta</h2>
-        <p className="auth-subtitle">Registrate para reservar Goya Recibe.</p>
+        <p className="auth-subtitle">Regístrate para reservar Goya Recibe.</p>
         <form className="auth-form" onSubmit={handleSubmit}>
           <div className="auth-field">
             <label className="auth-label" htmlFor="reg-nombre">Nombre</label>
@@ -90,7 +100,7 @@ export default function Registro({ onRegistro, irALogin }) {
           </div>
 
           <div className="auth-field">
-            <label className="auth-label" htmlFor="reg-correo">Correo electronico</label>
+            <label className="auth-label" htmlFor="reg-correo">Correo electrónico (opcional)</label>
             <input
               id="reg-correo"
               type="email"
@@ -100,13 +110,14 @@ export default function Registro({ onRegistro, irALogin }) {
               value={form.correo}
               onChange={handleChange}
               onBlur={() => setTouched((t) => ({ ...t, correo: true }))}
-              required
             />
-            {correoInvalido && <span className="auth-error">Ingresa un correo valido.</span>}
+            {correoInvalido && <span className="auth-error">Ingresa un correo válido.</span>}
           </div>
 
           <div className="auth-field">
-            <label className="auth-label" htmlFor="reg-telefono">Teléfono</label>
+            <label className="auth-label" htmlFor="reg-telefono">
+              Teléfono{correoNormalizado ? " (opcional)" : " (obligatorio si no agregas correo)"}
+            </label>
             <input
               id="reg-telefono"
               type="tel"
@@ -116,20 +127,20 @@ export default function Registro({ onRegistro, irALogin }) {
               value={form.telefono}
               onChange={handleChange}
               onBlur={() => setTouched((t) => ({ ...t, telefono: true }))}
-              required
+              required={!correoNormalizado}
             />
-            {telefonoInvalido && <span className="auth-error">El teléfono es obligatorio.</span>}
+            {telefonoInvalido && <span className="auth-error">Ingresa un teléfono válido.</span>}
           </div>
 
           <div className="auth-field">
-            <label className="auth-label" htmlFor="reg-contrasena">Contrasena</label>
+            <label className="auth-label" htmlFor="reg-contrasena">Contraseña</label>
             <div className="auth-input-wrap">
               <input
                 id="reg-contrasena"
                 type={mostrarContrasena ? "text" : "password"}
                 name="contrasena"
                 className={`auth-input ${contrasenaInvalida ? "input-error" : ""}`}
-                placeholder="Minimo 6 caracteres"
+                placeholder="Mínimo 8 caracteres"
                 value={form.contrasena}
                 onChange={handleChange}
                 onBlur={() => setTouched((t) => ({ ...t, contrasena: true }))}
@@ -139,7 +150,7 @@ export default function Registro({ onRegistro, irALogin }) {
                 type="button"
                 className="password-toggle"
                 onClick={() => setMostrarContrasena((v) => !v)}
-                aria-label="Mostrar u ocultar contrasena"
+                aria-label="Mostrar u ocultar contraseña"
               >
                 <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   {mostrarContrasena ? (
@@ -158,7 +169,7 @@ export default function Registro({ onRegistro, irALogin }) {
                 </svg>
               </button>
             </div>
-            {contrasenaInvalida && <span className="auth-error">Minimo 6 caracteres.</span>}
+            {contrasenaInvalida && <span className="auth-error">Mínimo 8 caracteres.</span>}
           </div>
 
           {error && <p className="error">{error}</p>}
@@ -168,13 +179,12 @@ export default function Registro({ onRegistro, irALogin }) {
         </form>
 
         <p className="auth-footer">
-          ¿Ya tenes cuenta?{" "}
+          ¿Ya tienes cuenta?{" "}
           <button className="auth-link" onClick={irALogin}>
-            Iniciar sesion
+            Iniciar sesión
           </button>
         </p>
       </div>
     </div>
   );
 }
-

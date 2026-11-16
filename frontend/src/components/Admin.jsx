@@ -1,24 +1,20 @@
-﻿import React, { useEffect, useState } from "react";
-import { MOCK_PROPERTIES, MOCK_OWNERS } from "../mockData.js";
-
-const API = "";
-
-const formatearFecha = (fecha) => {
-  const date = new Date(fecha);
-  return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString("es-AR");
-};
+import React, { useEffect, useState } from "react";
+import { api } from "../api.js";
 
 export default function Admin({ usuario }) {
   const [tab, setTab] = useState("propietarios");
   const [propietarios, setPropietarios] = useState([]);
   const [propiedades, setPropiedades] = useState([]);
-  const [auditoria, setAuditoria] = useState([]);
-  const [cargandoAuditoria, setCargandoAuditoria] = useState(false);
-  const [errorAuditoria, setErrorAuditoria] = useState("");
   const [mensaje, setMensaje] = useState("");
+  const [error, setError] = useState("");
   const [cargando, setCargando] = useState(true);
   const [confirmacion, setConfirmacion] = useState(null);
   const [editando, setEditando] = useState(null);
+  const [fotosExistentes, setFotosExistentes] = useState([]);
+  const [imagenesNuevas, setImagenesNuevas] = useState([]);
+  const [errorImagenes, setErrorImagenes] = useState("");
+  const [guardandoEdicion, setGuardandoEdicion] = useState(false);
+  const previewUrls = React.useRef(new Set());
   const [formEdit, setFormEdit] = useState({
     titulo: "",
     descripcion: "",
@@ -28,51 +24,40 @@ export default function Admin({ usuario }) {
     estado: "pending_review",
   });
 
-  const cargarPanel = () => {
+  const cargarPanel = async () => {
     setCargando(true);
-    setPropietarios(MOCK_OWNERS);
-    setPropiedades(MOCK_PROPERTIES);
-    setCargando(false);
+    setError("");
+    try {
+      const [owners, panel] = await Promise.all([
+        api("/api/admin/propietarios"),
+        api("/api/admin/panel"),
+      ]);
+      setPropietarios(owners);
+      setPropiedades(panel.propiedades);
+    } catch (requestError) {
+      setError(requestError.message || "No se pudo cargar el panel");
+    } finally {
+      setCargando(false);
+    }
   };
 
   useEffect(() => {
-    cargarPanel();
+    void cargarPanel();
   }, []);
 
-  const usuarioId = usuario?._id || usuario?.id;
-  useEffect(() => {
-    if (tab !== "auditoria") return undefined;
-    let activo = true;
-
-    const cargarAuditoria = async () => {
-      setCargandoAuditoria(true);
-      setErrorAuditoria("");
-      try {
-        const res = await fetch(`${API}/api/auditoria`, {
-          headers: { "X-Usuario-ID": String(usuarioId || "") },
-        });
-        const datos = await res.json();
-        if (!res.ok) throw new Error(datos.error || "No se pudo cargar la auditoria");
-        if (!Array.isArray(datos)) throw new Error("La respuesta de auditoria no es valida");
-        if (activo) setAuditoria(datos);
-      } catch (error) {
-        if (activo) {
-          setAuditoria([]);
-          setErrorAuditoria(error.message || "No se pudo conectar con el servidor");
-        }
-      } finally {
-        if (activo) setCargandoAuditoria(false);
-      }
-    };
-
-    cargarAuditoria();
-    return () => {
-      activo = false;
-    };
-  }, [tab, usuarioId]);
+  useEffect(
+    () => () => {
+      previewUrls.current.forEach((url) => URL.revokeObjectURL(url));
+      previewUrls.current.clear();
+    },
+    []
+  );
 
   const abrirEdicion = (prop) => {
     setEditando(prop);
+    setFotosExistentes(prop.fotos || (prop.foto ? [{ archivo: prop.foto }] : []));
+    setImagenesNuevas([]);
+    setErrorImagenes("");
     setFormEdit({
       titulo: prop.titulo || "",
       descripcion: prop.descripcion || "",
@@ -83,51 +68,114 @@ export default function Admin({ usuario }) {
     });
   };
 
-  const guardarEdicion = (e) => {
+  const liberarPreviews = () => {
+    previewUrls.current.forEach((url) => URL.revokeObjectURL(url));
+    previewUrls.current.clear();
+  };
+
+  const cerrarEdicion = () => {
+    liberarPreviews();
+    setImagenesNuevas([]);
+    setFotosExistentes([]);
+    setErrorImagenes("");
+    setEditando(null);
+  };
+
+  const seleccionarImagenes = (event) => {
+    const seleccionadas = Array.from(event.target.files || []);
+    event.target.value = "";
+    if (!seleccionadas.length) return;
+
+    const imagenesValidas = seleccionadas.filter((file) =>
+      ["image/jpeg", "image/png", "image/webp", "image/gif"].includes(file.type) &&
+      file.size <= 5 * 1024 * 1024
+    );
+    if (imagenesValidas.length !== seleccionadas.length) {
+      setErrorImagenes("Usá imágenes JPG, PNG, WebP o GIF de hasta 5 MB cada una.");
+    } else {
+      setErrorImagenes("");
+    }
+
+    const disponibles = Math.max(
+      0,
+      10 - fotosExistentes.length - imagenesNuevas.length
+    );
+    const paraAgregar = imagenesValidas.slice(0, disponibles);
+    if (paraAgregar.length < imagenesValidas.length) {
+      setErrorImagenes("La propiedad puede tener un máximo de 10 imágenes.");
+    }
+    const nuevasConPreview = paraAgregar.map((file) => {
+      const preview = URL.createObjectURL(file);
+      previewUrls.current.add(preview);
+      return { file, preview };
+    });
+    setImagenesNuevas((actuales) => [...actuales, ...nuevasConPreview]);
+  };
+
+  const quitarImagenNueva = (preview) => {
+    URL.revokeObjectURL(preview);
+    previewUrls.current.delete(preview);
+    setImagenesNuevas((actuales) =>
+      actuales.filter((imagen) => imagen.preview !== preview)
+    );
+  };
+
+  const guardarEdicion = async (e) => {
     e.preventDefault();
     if (!editando) return;
-    setPropiedades((prev) =>
-      prev.map((p) =>
-        String(p._id || p.id) === String(editando._id || editando.id)
-          ? {
-              ...p,
-              titulo: formEdit.titulo,
-              descripcion: formEdit.descripcion,
-              direccion: formEdit.direccion,
-              maxHuespedes: Number(formEdit.maxHuespedes),
-              precioPorNoche: Number(formEdit.precioPorNoche),
-              estado: formEdit.estado,
-            }
-          : p
-      )
-    );
-    setMensaje("Propiedad actualizada correctamente");
-    setEditando(null);
+    setError("");
+    setErrorImagenes("");
+    setGuardandoEdicion(true);
+    try {
+      const datos = new FormData();
+      Object.entries({
+        ...formEdit,
+        maxHuespedes: Number(formEdit.maxHuespedes),
+        precioPorNoche: Number(formEdit.precioPorNoche),
+      }).forEach(([key, value]) => datos.append(key, String(value)));
+      datos.append(
+        "keepPhotoIds",
+        JSON.stringify(
+          fotosExistentes.map((foto) => foto._id).filter(Boolean)
+        )
+      );
+      imagenesNuevas.forEach(({ file }) => datos.append("images", file));
+
+      const result = await api(`/api/admin/propiedades/${editando._id}`, {
+        method: "PUT",
+        body: datos,
+      });
+      setMensaje(result.mensaje);
+      cerrarEdicion();
+      await cargarPanel();
+    } catch (requestError) {
+      setError(requestError.message || "No se pudo actualizar la propiedad");
+    } finally {
+      setGuardandoEdicion(false);
+    }
   };
 
   const pedirConfirmacion = (tipo, prop) => {
     setConfirmacion({ tipo, prop });
   };
 
-  const confirmarAccion = () => {
+  const confirmarAccion = async () => {
     if (!confirmacion) return;
     const { tipo, prop } = confirmacion;
-    if (tipo === "eliminar") {
-      setPropiedades((prev) =>
-        prev.filter((p) => String(p._id || p.id) !== String(prop._id || prop.id))
-      );
-      setMensaje("Propiedad eliminada");
-    } else if (tipo === "aprobar") {
-      setPropiedades((prev) =>
-        prev.map((p) =>
-          String(p._id || p.id) === String(prop._id || prop.id)
-            ? { ...p, estado: "disponible" }
-            : p
-        )
-      );
-      setMensaje("Propiedad aprobada");
+    setError("");
+    try {
+      const result = tipo === "eliminar"
+        ? await api(`/api/admin/propiedades/${prop._id}`, { method: "DELETE" })
+        : await api(`/api/admin/propiedades/${prop._id}`, {
+            method: "PUT",
+            body: JSON.stringify({ estado: "disponible" }),
+          });
+      setMensaje(result.mensaje);
+      setConfirmacion(null);
+      await cargarPanel();
+    } catch (requestError) {
+      setError(requestError.message || "No se pudo completar la accion");
     }
-    setConfirmacion(null);
   };
 
   const aprobar = (prop) => pedirConfirmacion("aprobar", prop);
@@ -146,13 +194,13 @@ export default function Admin({ usuario }) {
     <div className="admin-panel">
       <header className="panel-header">
         <div>
-          <p className="panel-kicker">GoyaQuintas Premium</p>
           <h1>Panel de Administración Central</h1>
           <p className="panel-subtitle">Hola, {usuario?.nombre || "Administrador"}. Control total de propietarios y propiedades.</p>
         </div>
       </header>
 
       {mensaje && <p className="ok">{mensaje}</p>}
+      {error && <p className="error">{error}</p>}
 
       <div className="panel-tabs">
         <button className={`panel-tab ${tab === "propietarios" ? "active" : ""}`} onClick={() => setTab("propietarios")}>
@@ -160,9 +208,6 @@ export default function Admin({ usuario }) {
         </button>
         <button className={`panel-tab ${tab === "propiedades" ? "active" : ""}`} onClick={() => setTab("propiedades")}>
           Control General de Propiedades
-        </button>
-        <button className={`panel-tab ${tab === "auditoria" ? "active" : ""}`} onClick={() => setTab("auditoria")}>
-          Auditoría del Sistema (Logs)
         </button>
       </div>
 
@@ -235,7 +280,11 @@ export default function Admin({ usuario }) {
                       <p className="admin-prop-line">
                         <strong>Precio:</strong> ${Number(p.precioPorNoche || 0).toLocaleString("es-AR")} por noche ·{" "}
                         <strong>Huéspedes:</strong> {p.maxHuespedes} · <strong>Estado:</strong>{" "}
-                        {p.estado === "disponible" ? "Aprobada / Disponible" : "Bajo revisión"}
+                        {p.estado === "disponible"
+                          ? "Aprobada / Disponible"
+                          : p.estado === "suspendida"
+                            ? "Suspendida"
+                            : "Bajo revisión"}
                       </p>
                     </div>
                     <div className="admin-prop-actions">
@@ -252,46 +301,6 @@ export default function Admin({ usuario }) {
                   </div>
                 </article>
               ))}
-            </div>
-          )}
-        </section>
-      )}
-
-      {tab === "auditoria" && (
-        <section className="panel-card">
-          <div className="panel-card-header">
-            <h2>Auditoría del Sistema (Logs)</h2>
-            <p className="nota">Últimos eventos críticos registrados en la plataforma.</p>
-          </div>
-          {errorAuditoria && <p className="error">{errorAuditoria}</p>}
-          {cargandoAuditoria ? (
-            <p className="nota">Cargando auditoría...</p>
-          ) : auditoria.length === 0 ? (
-            <p className="nota">No hay registros de auditoría disponibles.</p>
-          ) : (
-            <div className="tabla-wrapper">
-              <table className="tabla-reservas">
-                <thead>
-                  <tr>
-                    <th>Fecha/Hora</th>
-                    <th>Usuario</th>
-                    <th>Acción</th>
-                    <th>Cambio (Antes -&gt; Ahora)</th>
-                    <th>IP</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {auditoria.map((log, index) => (
-                    <tr key={log._id || `${log.fecha}-${index}`}>
-                      <td>{formatearFecha(log.fecha)}</td>
-                      <td>{log.usuario}</td>
-                      <td>{log.accion}</td>
-                      <td>{log.detalle}</td>
-                      <td>{log.ip}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
             </div>
           )}
         </section>
@@ -327,7 +336,7 @@ export default function Admin({ usuario }) {
 
       {editando && (
         <div className="modal-overlay">
-          <div className="modal-card">
+          <div className="modal-card admin-edit-modal">
             <h3>Editar propiedad</h3>
             <form className="auth-form" onSubmit={guardarEdicion}>
               <div className="auth-field">
@@ -386,19 +395,69 @@ export default function Admin({ usuario }) {
               </div>
               <div className="auth-field">
                 <label className="auth-label" htmlFor="edit-descripcion">Descripción</label>
-                <input
+                <textarea
                   id="edit-descripcion"
                   className="auth-input"
                   value={formEdit.descripcion}
                   onChange={(e) => setFormEdit({ ...formEdit, descripcion: e.target.value })}
                 />
               </div>
+              <section className="image-manager" aria-labelledby="edit-images-title">
+                <h4 id="edit-images-title">Imágenes de la propiedad</h4>
+                <p className="image-manager-help">
+                  Elegí JPG, PNG, WebP o GIF de hasta 5 MB. Máximo 10 imágenes.
+                </p>
+                <label className="image-upload-label" htmlFor="edit-images">
+                  Seleccionar imágenes
+                </label>
+                <input
+                  id="edit-images"
+                  className="image-upload-input"
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={seleccionarImagenes}
+                />
+                {errorImagenes && <p className="error">{errorImagenes}</p>}
+                <div className="image-preview-grid">
+                  {fotosExistentes.map((foto, index) => (
+                    <figure className="image-preview" key={foto._id || foto.archivo}>
+                      <img src={foto.archivo} alt={`Imagen actual ${index + 1}`} />
+                      <button
+                        type="button"
+                        className="image-remove-btn"
+                        onClick={() =>
+                          setFotosExistentes((actuales) =>
+                            actuales.filter((actual) => actual !== foto)
+                          )
+                        }
+                        aria-label={`Quitar imagen actual ${index + 1}`}
+                      >
+                        Quitar
+                      </button>
+                    </figure>
+                  ))}
+                  {imagenesNuevas.map(({ file, preview }, index) => (
+                    <figure className="image-preview" key={preview}>
+                      <img src={preview} alt={`Nueva imagen ${index + 1}: ${file.name}`} />
+                      <button
+                        type="button"
+                        className="image-remove-btn"
+                        onClick={() => quitarImagenNueva(preview)}
+                        aria-label={`Quitar imagen nueva ${index + 1}`}
+                      >
+                        Quitar
+                      </button>
+                    </figure>
+                  ))}
+                </div>
+              </section>
               <div className="modal-actions">
-                <button type="button" className="btn-secondary" onClick={() => setEditando(null)}>
+                <button type="button" className="btn-secondary" onClick={cerrarEdicion} disabled={guardandoEdicion}>
                   Cancelar
                 </button>
-                <button type="submit" className="btn-primary">
-                  Guardar cambios
+                <button type="submit" className="btn-primary" disabled={guardandoEdicion}>
+                  {guardandoEdicion ? "Guardando..." : "Guardar cambios"}
                 </button>
               </div>
             </form>
@@ -408,6 +467,3 @@ export default function Admin({ usuario }) {
     </div>
   );
 }
-
-
-

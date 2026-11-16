@@ -1,1023 +1,1138 @@
-﻿import 'dotenv/config';
-import express from "express";
+import "dotenv/config";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, promises as fs } from "node:fs";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import cors from "cors";
+import express from "express";
+import multer from "multer";
 import mongoose from "mongoose";
-import bcrypt from "bcryptjs";
 import {
-  Usuario,
-  Propiedad,
-  Reserva,
-  Pago,
+  authenticate,
+  createToken,
+  hashPassword,
+  publicUser,
+  requireRole,
+  verifyPassword,
+} from "./auth.js";
+import {
   Foto,
+  LogAuditoria,
   MetodoPago,
   Notificacion,
-  LogAuditoria,
+  Pago,
+  Propiedad,
+  Reserva,
+  Usuario,
 } from "./models.js";
+import { ensureTestData } from "./seed-data.js";
 import {
   enviarMail,
   mailBienvenida,
   mailEstadoReserva,
+  mailReserva,
 } from "./mailer.js";
 
 const app = express();
-app.use(cors());
-app.use(express.json());
+const uploadsDirectory = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "uploads"
+);
+mkdirSync(uploadsDirectory, { recursive: true });
 
-// ---------- CONEXION MONGODB ----------
-if (!process.env.MONGO_URI) {
-  console.error("Falta configurar MONGO_URI en el entorno");
-  process.exit(1);
-}
-
-try {
-  await mongoose.connect(process.env.MONGO_URI);
-  console.log("¡Conexión exitosa a la base de datos unificada: quintas_goya!");
-} catch (error) {
-  console.error("Error crítico al conectar a MongoDB:", error);
-  process.exit(1);
-}
-
-// Metodo de pago inicial (se crea una sola vez)
-if ((await MetodoPago.countDocuments()) === 0) {
-  await MetodoPago.create({
-    efectivo: true,
-    tarjetaDebito: true,
-    tarjetaCredito: true,
-    transferenciaBancaria: true,
-    billeteraVirtual: true,
+const imageTypes = new Map([
+  ["image/jpeg", ".jpg"],
+  ["image/png", ".png"],
+  ["image/webp", ".webp"],
+  ["image/gif", ".gif"],
+]);
+const imageUpload = multer({
+  storage: multer.diskStorage({
+    destination: uploadsDirectory,
+    filename: (_req, file, callback) => {
+      callback(null, `${randomUUID()}${imageTypes.get(file.mimetype)}`);
+    },
+  }),
+  limits: { fileSize: 5 * 1024 * 1024, files: 10 },
+  fileFilter: (_req, file, callback) => {
+    if (!imageTypes.has(file.mimetype)) {
+      const error = new Error("Formato de imagen no permitido");
+      error.code = "INVALID_IMAGE_TYPE";
+      callback(error);
+      return;
+    }
+    callback(null, true);
+  },
+});
+const asyncRoute = (handler) => (req, res, next) =>
+  Promise.resolve(handler(req, res, next)).catch(async (error) => {
+    if (Array.isArray(req.files) && req.files.length) {
+      await removeUploadedFiles(req.files).catch((cleanupError) => {
+        console.error("No se pudieron limpiar imágenes de una solicitud fallida:", cleanupError);
+      });
+    }
+    next(error);
   });
-}
-
-// Seed automatico: si la base esta vacia crea datos de ejemplo
-if ((await Usuario.countDocuments()) === 0) {
-  const usuariosIniciales = [
-    { nombre: "Administrador", correo: "admin@casas.com", contrasena: "admin123", rol: "admin", telefono: "0000000000" },
-    { nombre: "Juan", apellido: "Perez", correo: "juan@casas.com", contrasena: "pass1", rol: "anfitrion", telefono: "2664567890" },
-    { nombre: "Maria", apellido: "Gomez", correo: "maria@casas.com", contrasena: "pass2", rol: "anfitrion", telefono: "2664567891" },
-  ];
-  await Usuario.create(
-    await Promise.all(
-      usuariosIniciales.map(async (usuario) => ({
-        ...usuario,
-        contrasena: await bcrypt.hash(usuario.contrasena, 12),
-      }))
-    )
+const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const normalizePhone = (value) =>
+  typeof value === "string" ? value.trim().replace(/[^\d+]/g, "") : "";
+const validPhone = /^\+?\d{7,15}$/;
+const paymentMethods = new Set([
+  "efectivo",
+  "tarjeta_debito",
+  "tarjeta_credito",
+  "transferencia_bancaria",
+  "billetera_virtual",
+]);
+const parseDateOnly = (value) => {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value
+    ? null
+    : date;
+};
+const todayInGoya = () => {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en", {
+      timeZone: "America/Argentina/Cordoba",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    })
+      .formatToParts(new Date())
+      .map(({ type, value }) => [type, value])
   );
-  const juan = await Usuario.findOne({ correo: "juan@casas.com" });
-  const maria = await Usuario.findOne({ correo: "maria@casas.com" });
-  const propiedades = await Propiedad.insertMany([
-    {
-      propietario: juan._id,
-      titulo: "Quinta Los Lapachos",
-      descripcion: "Quinta con pileta, wifi y cochera para familias",
-      direccion: "Zona Norte, Goya, Corrientes",
-      maxHuespedes: 6,
-      precioPorNoche: 85000,
-      estado: "pending_review",
-    },
-    {
-      propietario: maria._id,
-      titulo: "Chalet Costa del Rio",
-      descripcion: "Chalet con pileta y cochera frente al rio",
-      direccion: "Camino a Puerto Boca, Goya, Corrientes",
-      maxHuespedes: 8,
-      precioPorNoche: 120000,
-      estado: "pending_review",
-    },
-    {
-      propietario: juan._id,
-      titulo: "Cabana del Monte",
-      descripcion: "Cabana con mascotas y wifi en zona rural",
-      direccion: "Zona rural norte, Goya, Corrientes",
-      maxHuespedes: 4,
-      precioPorNoche: 60000,
-      estado: "pending_review",
-    },
-  ]);
-  await Foto.insertMany([
-    {
-      propiedad: propiedades[0]._id,
-      archivo: "https://images.unsplash.com/photo-1600585154340-be6161a56a0c?w=800&q=80",
-      descripcion: "Frente de la quinta",
-    },
-    {
-      propiedad: propiedades[1]._id,
-      archivo: "https://images.unsplash.com/photo-1512917774080-9991f1c4c750?w=800&q=80",
-      descripcion: "Vista del chalet",
-    },
-    {
-      propiedad: propiedades[2]._id,
-      archivo: "https://imagen-rota-ejemplo.com/cabana-del-monte.jpg",
-      descripcion: "Imagen no disponible",
-    },
-  ]);
-  console.log("Seed: usuarios y propiedades de ejemplo creados");
-}
-
-async function registrarNotificacion(usuarios, datos) {
-  const destinatarios = [...new Set(usuarios.filter(Boolean).map(String))];
-  if (!destinatarios.length) return [];
-  return Notificacion.insertMany(
-    destinatarios.map((usuarioId) => ({
-      usuarioId,
-      mensaje: datos.mensaje,
-      canal: datos.canal,
-    }))
-  );
-}
-
-function limpiarDatoLog(valor) {
-  return String(valor ?? "desconocido").replace(/[\r\n|]+/g, " ");
-}
-
-async function registrarLog({ usuario, rol, accion, detalle, ip }) {
-  const fecha = new Date();
-  const registro = {
-    usuario: String(usuario || "desconocido"),
-    rol: String(rol || "desconocido"),
-    accion: String(accion || "ACCION_DESCONOCIDA"),
-    detalle: String(detalle || "Sin detalle"),
-    ip: String(ip || "desconocida"),
-    fecha,
-  };
-  const fechaFormateada = fecha.toISOString().slice(0, 19).replace("T", " ");
-
-  console.log(
-    `[${fechaFormateada}] Usuario: ${limpiarDatoLog(registro.usuario)} | Acción: ${limpiarDatoLog(registro.accion)} | Cambio: ${limpiarDatoLog(registro.detalle)} | IP: ${limpiarDatoLog(registro.ip)}`
-  );
-
-  try {
-    await LogAuditoria.create(registro);
-  } catch (error) {
-    console.error("No se pudo guardar el registro de auditoria:", error);
-  }
-}
-
-async function registrarLoginFallido(req, correo, usuario = null, detalle = "Credenciales incorrectas") {
-  await registrarLog({
-    usuario: typeof correo === "string" && correo.trim() ? correo.trim() : "desconocido",
-    rol: usuario?.rol || "desconocido",
-    accion: "LOGIN_FALLIDO",
+  return `${parts.year}-${parts.month}-${parts.day}`;
+};
+const reservationHasEnded = (reservation) =>
+  reservation.fechaFin.toISOString().slice(0, 10) < todayInGoya();
+const registrarNotificacion = (usuarioId, mensaje, canal) =>
+  Notificacion.create({ usuarioId, mensaje, canal });
+const registrarAuditoria = ({ usuario, accion, detalle, ip }) =>
+  LogAuditoria.create({
+    usuario: usuario.correo || usuario.nombre || String(usuario._id),
+    rol: usuario.rol,
+    accion,
     detalle,
-    ip: req.ip,
+    ip,
   });
-}
-
-function obtenerCambiosPropiedad(propiedad, datos) {
-  const campos = [
-    "titulo",
-    "descripcion",
-    "direccion",
-    "maxHuespedes",
-    "precioPorNoche",
-    "estado",
-  ];
-
-  return campos.flatMap((campo) => {
-    const solicitado = datos[campo];
-    if (solicitado === undefined || solicitado === "") return [];
-    const nuevo = ["maxHuespedes", "precioPorNoche"].includes(campo)
-      ? Number(solicitado)
-      : solicitado;
-    if (String(propiedad[campo]) === String(nuevo)) return [];
-    return [{ campo, anterior: propiedad[campo], nuevo }];
-  });
-}
-
-async function registrarCambiosPropiedad(req, propiedad, cambios) {
-  const usuario = req.usuario.correo || req.usuario.nombre || req.usuario._id;
-  if (!cambios.length) {
-    await registrarLog({
-      usuario,
-      rol: req.usuario.rol,
-      accion: "UPDATE_PROPIEDAD",
-      detalle: `Propiedad ${propiedad._id} editada sin cambios en sus valores`,
-      ip: req.ip,
-    });
-    return;
-  }
-
+const uploadedFiles = (req) => (Array.isArray(req.files) ? req.files : []);
+const removeUploadedFiles = async (files) => {
   await Promise.all(
-    cambios.map(({ campo, anterior, nuevo }) =>
-      registrarLog({
-        usuario,
-        rol: req.usuario.rol,
-        accion: campo === "precioPorNoche"
-          ? "UPDATE_PRECIO"
-          : campo === "estado"
-            ? "UPDATE_ESTADO_PROPIEDAD"
-            : "UPDATE_PROPIEDAD",
-        detalle: `${campo}: ${anterior} -> ${nuevo}`,
-        ip: req.ip,
+    files.map((file) =>
+      fs.unlink(file.path).catch((error) => {
+        if (error.code !== "ENOENT") throw error;
       })
     )
   );
-}
-
-// ---------- LOGIN ----------
-app.post("/api/login", async (req, res) => {
-  const { correo, contrasena } = req.body || {};
-
-  if (typeof correo !== "string" || typeof contrasena !== "string") {
-    await registrarLoginFallido(req, correo, null, "Datos de inicio de sesion invalidos");
-    return res.status(401).json({ error: "Correo o contrasena incorrectos" });
-  }
-
-  const user = await Usuario.findOne({ correo });
-  if (!user) {
-    await registrarLoginFallido(req, correo);
-    return res.status(401).json({ error: "Correo o contrasena incorrectos" });
-  }
-
-  const tieneHashBcrypt = /^\$2[aby]\$\d{2}\$/.test(user.contrasena);
-  const contrasenaValida = tieneHashBcrypt
-    ? await bcrypt.compare(contrasena, user.contrasena)
-    : user.contrasena === contrasena;
-  if (!contrasenaValida) {
-    await registrarLoginFallido(req, correo, user);
-    return res.status(401).json({ error: "Correo o contrasena incorrectos" });
-  }
-
-  if (!tieneHashBcrypt) {
-    user.contrasena = await bcrypt.hash(contrasena, 12);
-    await user.save();
-  }
-
-  res.json({
-    mensaje: `Bienvenido ${user.nombre}`,
-    usuario: {
-      _id: user._id,
-      id: user._id,
-      nombre: user.nombre,
-      apellido: user.apellido,
-      correo: user.correo,
-      telefono: user.telefono,
-      rol: user.rol,
-    },
-  });
-});
-
-// ---------- REGISTRO ----------
-// Los nuevos registros son clientes: solo pueden hacer reservas
-app.post("/api/registro", async (req, res) => {
-  const { nombre, apellido, correo, contrasena, telefono } = req.body;
-
-  if (!nombre?.trim() || !correo?.trim() || !contrasena || !telefono?.trim()) {
-    return res.status(400).json({ error: "Nombre, correo, contraseña y teléfono son obligatorios" });
-  }
-
-  if (await Usuario.findOne({ correo })) {
-    return res.status(409).json({ error: "Ese correo ya esta registrado" });
-  }
-
-  const nuevo = await Usuario.create({
-    nombre,
-    apellido: apellido || "",
-    correo,
-    contrasena: await bcrypt.hash(contrasena, 12),
-    telefono: telefono.trim(),
-    rol: "inquilino",
-  });
-
-  res.status(201).json({
-    mensaje: `Cuenta creada. Bienvenido ${nuevo.nombre}`,
-    usuario: {
-      id: nuevo._id,
-      nombre: nuevo.nombre,
-      apellido: nuevo.apellido,
-      correo: nuevo.correo,
-      telefono: nuevo.telefono,
-      rol: nuevo.rol,
-    },
-  });
-
-  // Mail de bienvenida (no bloquea la respuesta)
-  const mail = mailBienvenida(nuevo);
-  enviarMail(mail.para, mail.asunto, mail.html).catch(() => {});
-});
-
-// ---------- PROPIEDADES ----------
-app.get("/api/propiedades", async (req, res) => {
-  const propiedades = await Propiedad.find().populate(
-    "propietario",
-    "nombre apellido correo"
-  );
-  const conFoto = await Promise.all(
-    propiedades.map(async (p) => {
-      const foto = await Foto.findOne({ propiedad: p._id }).sort({ _id: -1 });
-      return { ...p.toObject(), foto: foto?.archivo || null };
-    })
-  );
-  res.json(conFoto);
-});
-
-// ---------- PROPIEDADES DE UN PROPIETARIO ----------
-app.get("/api/propiedades/propietario/:idUsuario", async (req, res) => {
+};
+const isValidImageContent = async (file) => {
+  const handle = await fs.open(file.path, "r");
   try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.idUsuario)) {
-      return res.status(400).json({ error: "ID de usuario invalido" });
+    const header = Buffer.alloc(12);
+    const { bytesRead } = await handle.read(header, 0, header.length, 0);
+    if (file.mimetype === "image/jpeg") {
+      return bytesRead >= 3 && header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff;
     }
-    const propiedades = await Propiedad.find({ propietario: req.params.idUsuario }).populate(
-      "propietario",
-      "nombre apellido correo"
+    if (file.mimetype === "image/png") {
+      return header.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    }
+    if (file.mimetype === "image/gif") {
+      const signature = header.subarray(0, 6).toString("ascii");
+      return signature === "GIF87a" || signature === "GIF89a";
+    }
+    return (
+      file.mimetype === "image/webp" &&
+      header.subarray(0, 4).toString("ascii") === "RIFF" &&
+      header.subarray(8, 12).toString("ascii") === "WEBP"
     );
-    res.json(propiedades);
-  } catch (error) {
-    console.error("Error al obtener propiedades del propietario:", error);
-    res.status(500).json({ error: "No se pudieron obtener las propiedades" });
+  } finally {
+    await handle.close();
   }
-});
-
-// ---------- RESERVAS DE UN PROPIETARIO ----------
-app.get("/api/reservas/propietario/:idUsuario", async (req, res) => {
-  try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.idUsuario)) {
-      return res.status(400).json({ error: "ID de usuario invalido" });
-    }
-    const propiedades = await Propiedad.find({ propietario: req.params.idUsuario }).select("_id");
-    const ids = propiedades.map((p) => p._id);
-    const reservas = await Reserva.find({ propiedad: { $in: ids } })
-      .populate("propiedad", "titulo precioPorNoche")
-      .populate("turista", "nombre apellido telefono")
-      .sort({ fechaCreacion: -1 });
-    res.json(
-      reservas.map((r) => ({
-        id: r._id,
-        propiedadId: r.propiedad?._id || r.propiedad,
-        propiedadTitulo: r.propiedad?.titulo || "Propiedad",
-        checkIn: r.fechaInicio,
-        checkOut: r.fechaFin,
-        montoTotal: r.montoTotal,
-        estado: r.estado,
-        turista: r.turista,
-      }))
-    );
-  } catch (error) {
-    console.error("Error al obtener reservas del propietario:", error);
-    res.status(500).json({ error: "No se pudieron obtener las reservas" });
-  }
-});
-
-// Detalle de una propiedad con sus fotos
-app.get("/api/propiedades/:id", async (req, res) => {
-  const prop = await Propiedad.findById(req.params.id).populate(
-    "propietario",
-    "nombre apellido correo telefono"
-  );
-  if (!prop) return res.status(404).json({ error: "Propiedad no encontrada" });
-  res.json(prop);
-});
-
-// ---------- RESERVAS ----------
-// Reservas de una propiedad (para el calendario)
-app.get("/api/reservas/:propiedadId", async (req, res) => {
-  try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.propiedadId)) {
-      return res.status(400).json({ error: "ID de propiedad invalido" });
-    }
-    const reservas = await Reserva.find({
-      propiedad: req.params.propiedadId,
-      estado: { $nin: ["cancelada", "rechazada"] },
-    }).populate("turista", "nombre apellido");
-    res.json(
-      reservas.map((r) => ({
-        id: r._id,
-        propiedadId: r.propiedad,
-        checkIn: r.fechaInicio,
-        checkOut: r.fechaFin,
-        estado: r.estado,
-      }))
-    );
-  } catch (error) {
-    console.error("Error al obtener reservas de la propiedad:", error);
-    res.status(500).json({ error: "No se pudieron obtener las reservas" });
-  }
-});
-
-// Crear reserva (valida solapamiento y calcula el monto total)
-app.post("/api/reservas", async (req, res) => {
-  const { propiedadId, checkIn, checkOut, datosTurista, metodoPago } = req.body;
-
-  if (!propiedadId || !checkIn || !checkOut) {
-    return res.status(400).json({ error: "Faltan datos de la reserva" });
-  }
-  if (new Date(checkIn) >= new Date(checkOut)) {
-    return res.status(400).json({ error: "Las fechas son invalidas" });
-  }
-
-  const propiedad = await Propiedad.findById(propiedadId);
-  if (!propiedad)
-    return res.status(404).json({ error: "Propiedad no encontrada" });
-  if (!["disponible", "pending_review"].includes(propiedad.estado)) {
-    return res.status(409).json({ error: "La propiedad no esta disponible" });
-  }
-
-  // No permitir reservas que se superpongan con otras activas
-  const superpuesta = await Reserva.findOne({
-    propiedad: propiedadId,
-    estado: { $nin: ["cancelada", "rechazada"] },
-    fechaInicio: { $lt: new Date(checkOut) },
-    fechaFin: { $gt: new Date(checkIn) },
-  });
-  if (superpuesta) {
-    return res
-      .status(409)
-      .json({ error: "Esas fechas ya estan reservadas. Elegi otras fechas." });
-  }
-
-  // Turista: si hay usuario logueado se usa su id; si no, se crea/usa uno por correo
-  let turistaId = req.body.turistaId;
-  if (!turistaId) {
-    const { nombre, correo, telefono } = datosTurista || {};
-    if (!nombre || !correo || !telefono?.trim()) {
-      return res
-        .status(400)
-        .json({ error: "Faltan datos del turista (nombre, correo y teléfono)" });
-    }
-    let u = await Usuario.findOne({ correo });
-    if (!u) {
-      u = await Usuario.create({
-        nombre,
-        correo,
-        contrasena: await bcrypt.hash("sin-password", 12),
-        telefono: telefono.trim(),
-        rol: "inquilino",
-      });
-    }
-    turistaId = u._id;
-  }
-
-  const noches = Math.round((new Date(checkOut) - new Date(checkIn)) / 86400000);
-  const reserva = await Reserva.create({
-    propiedad: propiedadId,
-    turista: turistaId,
-    fechaInicio: checkIn,
-    fechaFin: checkOut,
-    montoTotal: noches * propiedad.precioPorNoche,
-    estado: "pendiente",
-  });
-
-  // El pago permanece pendiente hasta que se confirme la reserva.
-  const pago = await Pago.create({
-    reserva: reserva._id,
-    montoPagado: reserva.montoTotal,
-    metodoPago: metodoPago || "efectivo",
-    estado: "pendiente",
-  });
-
-  const turista = await Usuario.findById(turistaId);
-  const eventos = await registrarNotificacion(
-    [propiedad.propietario],
-    {
-      canal: "reserva",
-      mensaje: `Nueva reserva pendiente para ${propiedad.titulo}.`,
-    }
-  );
-
-  res.status(201).json({
-    mensaje: "Reserva registrada",
-    reserva: {
-      id: reserva._id,
-      propiedadId: propiedad._id,
-      propiedadTitulo: propiedad.titulo,
-      checkIn: reserva.fechaInicio,
-      checkOut: reserva.fechaFin,
-      montoTotal: reserva.montoTotal,
-      estado: reserva.estado,
-      turista: turista ? {
-        _id: turista._id,
-        nombre: turista.nombre,
-        apellido: turista.apellido,
-        telefono: turista.telefono,
-      } : null,
-    },
-    evento: eventos[0],
-    pago: { id: pago._id, monto: pago.montoPagado, metodoPago: pago.metodoPago, estado: pago.estado },
-  });
-});
-
-// ---------- PROPIETARIO ----------
-// Middleware simple: verifica usuario propietario
-async function authPropietario(req, res, next) {
-  const usuarioId = req.headers["x-usuario-id"];
-  if (!mongoose.Types.ObjectId.isValid(usuarioId)) {
-    return res.status(401).json({ error: "Falta identificacion de usuario valida" });
-  }
-  try {
-    const usuario = await Usuario.findById(usuarioId);
-    if (!usuario || usuario.rol !== "anfitrion") {
-      return res.status(403).json({ error: "Solo anfitriones" });
-    }
-    req.usuario = usuario;
-    next();
-  } catch (error) {
-    console.error("Error al verificar permisos de anfitrion:", error);
-    res.status(500).json({ error: "No se pudieron verificar los permisos" });
-  }
-}
-
-async function authPropietarioOAdmin(req, res, next) {
-  const usuarioId = req.headers["x-usuario-id"];
-  if (!mongoose.Types.ObjectId.isValid(usuarioId)) {
-    return res.status(401).json({ error: "Falta identificacion de usuario valida" });
-  }
-
-  try {
-    const usuario = await Usuario.findById(usuarioId);
-    if (!usuario) return res.status(401).json({ error: "Usuario no autorizado" });
-    if (!["anfitrion", "admin"].includes(usuario.rol)) {
-      return res.status(403).json({ error: "Solo anfitriones o administradores" });
-    }
-    req.usuario = usuario;
-    next();
-  } catch (error) {
-    console.error("Error al verificar permisos de propiedad:", error);
-    res.status(500).json({ error: "No se pudieron verificar los permisos" });
-  }
-}
-
-async function authAdmin(req, res, next) {
-  const usuarioId = req.headers["x-usuario-id"];
-  if (!mongoose.Types.ObjectId.isValid(usuarioId)) {
-    return res.status(401).json({ error: "Falta identificacion de usuario valida" });
-  }
-
-  try {
-    const usuario = await Usuario.findById(usuarioId);
-    if (!usuario || usuario.rol !== "admin") {
-      return res.status(403).json({ error: "Solo administradores" });
-    }
-    req.usuario = usuario;
-    next();
-  } catch (error) {
-    console.error("Error al verificar permisos de auditoria:", error);
-    res.status(500).json({ error: "No se pudieron verificar los permisos" });
-  }
-}
-
-// Panel propio: sus propiedades + reservas + estadisticas
-app.get("/api/propietario/panel", authPropietario, async (req, res) => {
-  const susPropiedades = await Propiedad.find({ propietario: req.usuario._id });
-  const ids = susPropiedades.map((p) => p._id);
-  const susReservas = await Reserva.find({
-    propiedad: { $in: ids },
+};
+const addPropertyPhotos = async (properties) => {
+  if (!properties.length) return properties;
+  const photos = await Foto.find({
+    propiedad: { $in: properties.map((property) => property._id) },
   })
-    .populate("propiedad", "titulo precioPorNoche")
-    .populate("turista", "nombre apellido telefono");
-
-  const estadisticas = susPropiedades.map((p) => {
-    const rs = susReservas.filter(
-      (r) => String(r.propiedad?._id) === String(p._id)
-    );
-    const noches = rs.reduce(
-      (t, r) =>
-        t + Math.max(1, Math.round((r.fechaFin - r.fechaInicio) / 86400000)),
-      0
-    );
+    .sort({ _id: -1 })
+    .lean();
+  const photosByProperty = new Map();
+  photos.forEach((photo) => {
+    const key = String(photo.propiedad);
+    const propertyPhotos = photosByProperty.get(key) || [];
+    propertyPhotos.push(photo);
+    photosByProperty.set(key, propertyPhotos);
+  });
+  return properties.map((property) => {
+    const propertyPhotos = photosByProperty.get(String(property._id)) || [];
     return {
-      propiedadId: p._id,
-      titulo: p.titulo,
-      precioPorNoche: p.precioPorNoche,
-      reservas: rs.length,
-      noches,
-      ingresos: noches * p.precioPorNoche,
-      comision: noches * p.precioPorNoche * 0.1,
-      liquidacion: noches * p.precioPorNoche * 0.9,
+      ...property,
+      fotos: propertyPhotos,
+      foto: propertyPhotos[0]?.archivo || null,
     };
   });
-
-  res.json({
-    propiedades: susPropiedades,
-    reservas: susReservas,
-    estadisticas,
-  });
-});
-
-// El propietario edita SOLO sus propiedades
-app.put("/api/propietario/propiedades/:id", authPropietario, async (req, res) => {
-  if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-    return res.status(400).json({ error: "ID de propiedad invalido" });
-  }
-  const prop = await Propiedad.findOne({
-    _id: req.params.id,
-    propietario: req.usuario._id,
-  });
-  if (!prop) return res.status(404).json({ error: "Propiedad no encontrada" });
-
-  const { titulo, descripcion, direccion, maxHuespedes, precioPorNoche, estado } =
-    req.body;
-  const cambios = obtenerCambiosPropiedad(prop, req.body);
-  if (titulo) prop.titulo = titulo;
-  if (descripcion) prop.descripcion = descripcion;
-  if (direccion) prop.direccion = direccion;
-  if (maxHuespedes) prop.maxHuespedes = Number(maxHuespedes);
-  if (estado) prop.estado = estado;
-  if (precioPorNoche !== undefined && precioPorNoche !== "") {
-    const precio = Number(precioPorNoche);
-    if (Number.isNaN(precio) || precio < 0) {
-      return res.status(400).json({ error: "Precio invalido" });
-    }
-    prop.precioPorNoche = precio;
-  }
-  await prop.save();
-  await registrarCambiosPropiedad(req, prop, cambios);
-
-  res.json({ mensaje: `Propiedad "${prop.titulo}" actualizada`, propiedad: prop });
-});
-
-// ---------- ADMIN ----------
-app.get("/api/admin/panel", async (req, res) => {
-  const [propiedades, reservas] = await Promise.all([
-    Propiedad.find().populate("propietario", "nombre apellido correo"),
-    Reserva.find().populate("propiedad", "titulo").populate("turista", "nombre apellido"),
+};
+const addPropertyRatings = async (properties) => {
+  if (!properties.length) return properties;
+  const ratings = await Reserva.aggregate([
+    {
+      $match: {
+        propiedad: { $in: properties.map((property) => property._id) },
+        calificacion: { $gte: 1, $lte: 5 },
+        estado: { $nin: ["cancelada", "rechazada"] },
+      },
+    },
+    {
+      $group: {
+        _id: "$propiedad",
+        promedioCalificacion: { $avg: "$calificacion" },
+        cantidadResenas: { $sum: 1 },
+      },
+    },
   ]);
-  res.json({ propiedades, reservas });
-});
-
-app.put("/api/admin/propiedades/:id", authPropietarioOAdmin, async (req, res) => {
-  if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-    return res.status(400).json({ error: "ID de propiedad invalido" });
-  }
-  const prop = await Propiedad.findById(req.params.id);
-  if (!prop) return res.status(404).json({ error: "Propiedad no encontrada" });
-  if (
-    req.usuario.rol !== "admin"
-    && String(prop.propietario) !== String(req.usuario._id)
-  ) {
-    return res.status(403).json({ error: "No puedes modificar esta propiedad" });
-  }
-
-  const { titulo, descripcion, direccion, maxHuespedes, precioPorNoche, estado } =
-    req.body;
-  const cambios = obtenerCambiosPropiedad(prop, req.body);
-  if (titulo) prop.titulo = titulo;
-  if (descripcion) prop.descripcion = descripcion;
-  if (direccion) prop.direccion = direccion;
-  if (maxHuespedes) prop.maxHuespedes = Number(maxHuespedes);
-  if (estado) prop.estado = estado;
-  if (precioPorNoche !== undefined && precioPorNoche !== "") {
-    const precio = Number(precioPorNoche);
-    if (Number.isNaN(precio) || precio < 0) {
-      return res.status(400).json({ error: "Precio invalido" });
-    }
-    prop.precioPorNoche = precio;
-  }
-  await prop.save();
-  await registrarCambiosPropiedad(req, prop, cambios);
-
-  res.json({ mensaje: `Propiedad "${prop.titulo}" actualizada`, propiedad: prop });
-});
-
-app.post("/api/admin/propiedades", async (req, res) => {
-  const { titulo, descripcion, direccion, maxHuespedes, precioPorNoche, estado, propietarioId } =
-    req.body;
-
-  if (!titulo || precioPorNoche === undefined) {
-    return res.status(400).json({ error: "Faltan datos de la propiedad" });
-  }
-  const precio = Number(precioPorNoche);
-  if (Number.isNaN(precio) || precio < 0) {
-    return res.status(400).json({ error: "Precio invalido" });
-  }
-
-  // Si no indican propietario, se usa el primero con ese rol
-  let propId = propietarioId;
-  if (!propId) {
-    const p = await Usuario.findOne({ rol: "anfitrion" });
-    propId = p?._id;
-  }
-
-  const nueva = await Propiedad.create({
-    propietario: propId,
-    titulo,
-    descripcion: descripcion || "",
-    direccion: direccion || "",
-    maxHuespedes: maxHuespedes || 4,
-    precioPorNoche: precio,
-    estado: estado || "disponible",
+  const ratingsByProperty = new Map(
+    ratings.map((rating) => [String(rating._id), rating])
+  );
+  return properties.map((property) => {
+    const rating = ratingsByProperty.get(String(property._id));
+    return {
+      ...property,
+      promedioCalificacion: rating?.promedioCalificacion || 0,
+      cantidadResenas: rating?.cantidadResenas || 0,
+    };
   });
-
-  let evento;
-  if (nueva.estado === "pending_review") {
-    const administradores = await Usuario.find({ rol: "admin" }).select("_id");
-    const eventos = await registrarNotificacion(
-      [propId, ...administradores.map((admin) => admin._id)],
-      {
-        canal: "propiedad_pendiente",
-        mensaje: `Nueva propiedad pendiente de revisión: ${nueva.titulo}.`,
+};
+const removeStoredPhotoFiles = async (photos) => {
+  await Promise.all(
+    photos.map(async (photo) => {
+      if (typeof photo.archivo !== "string" || !photo.archivo.startsWith("/uploads/")) {
+        return;
       }
-    );
-    evento = eventos.find((item) => String(item.usuarioId) === String(propId));
-  }
+      const uploadName = photo.archivo.slice("/uploads/".length);
+      const filename = path.basename(uploadName);
+      if (filename !== uploadName) return;
+      const filePath = path.join(uploadsDirectory, filename);
+      try {
+        if (await Foto.exists({ archivo: photo.archivo })) return;
+        await fs.unlink(filePath);
+      } catch (error) {
+        if (error.code !== "ENOENT") {
+          console.error("No se pudo eliminar una imagen reemplazada:", error);
+        }
+      }
+    })
+  );
+};
 
-  res.status(201).json({
-    mensaje: `Propiedad "${titulo}" publicada`,
-    propiedad: nueva,
-    ...(evento ? { evento } : {}),
-  });
+app.use(
+  cors({
+    origin:
+      process.env.CORS_ORIGIN ||
+      (process.env.NODE_ENV === "production" ? false : true),
+  })
+);
+app.use("/uploads", express.static(uploadsDirectory, { maxAge: "1d", immutable: true }));
+app.use(express.json({ limit: "1mb" }));
+
+let databaseReady;
+const ensureDatabase = () => {
+  if (!databaseReady) {
+    if (
+      process.env.NODE_ENV === "production" &&
+      (!process.env.JWT_SECRET ||
+        process.env.JWT_SECRET.length < 32 ||
+        process.env.JWT_SECRET.startsWith("replace-"))
+    ) {
+      return Promise.reject(
+        new Error("Configura JWT_SECRET con al menos 32 caracteres aleatorios")
+      );
+    }
+    const mongoUri =
+      process.env.MONGODB_URI ||
+      (process.env.NODE_ENV === "production"
+        ? ""
+        : "mongodb://127.0.0.1:27017/goya_quintas_test");
+    if (!mongoUri) {
+      return Promise.reject(new Error("MONGODB_URI es obligatorio en produccion"));
+    }
+    databaseReady = mongoose
+      .connect(mongoUri)
+      .then(() => ensureTestData())
+      .catch((error) => {
+        databaseReady = null;
+        throw error;
+      });
+  }
+  return databaseReady;
+};
+
+app.use((req, res, next) => {
+  ensureDatabase().then(() => next()).catch(next);
 });
 
-app.delete("/api/admin/propiedades/:id", authPropietarioOAdmin, async (req, res) => {
-  if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-    return res.status(400).json({ error: "ID de propiedad invalido" });
-  }
-  const prop = await Propiedad.findById(req.params.id);
-  if (!prop) return res.status(404).json({ error: "Propiedad no encontrada" });
-  if (
-    req.usuario.rol !== "admin"
-    && String(prop.propietario) !== String(req.usuario._id)
-  ) {
-    return res.status(403).json({ error: "No puedes eliminar esta propiedad" });
-  }
-  await prop.deleteOne();
-  await registrarLog({
-    usuario: req.usuario.correo || req.usuario.nombre || req.usuario._id,
-    rol: req.usuario.rol,
-    accion: "DELETE_PROPIEDAD",
-    detalle: `Propiedad eliminada: ${prop.titulo} (${prop._id})`,
-    ip: req.ip,
-  });
-  res.json({ mensaje: `Propiedad "${prop.titulo}" eliminada` });
-});
+app.get(
+  "/api/health",
+  asyncRoute(async (_req, res) => {
+    res.json({ ok: true });
+  })
+);
 
-app.get("/api/auditoria", authAdmin, async (req, res) => {
-  try {
-    const registros = await LogAuditoria.find()
+app.post(
+  "/api/login",
+  asyncRoute(async (req, res) => {
+    const body = req.body && typeof req.body === "object" ? req.body : {};
+    const identificador = typeof body.identificador === "string"
+      ? body.identificador.trim()
+      : typeof body.correo === "string"
+      ? body.correo.trim()
+      : "";
+    const contrasena = typeof body.contrasena === "string" ? body.contrasena : "";
+    if (!identificador || !contrasena) {
+      return res.status(400).json({ error: "El correo o teléfono y la contraseña son obligatorios" });
+    }
+
+    const query = validEmail.test(identificador)
+      ? { correo: identificador.toLowerCase() }
+      : { telefono: normalizePhone(identificador) };
+    if ("telefono" in query && !validPhone.test(query.telefono)) {
+      return res.status(400).json({ error: "Ingresa un correo electrónico o teléfono válido" });
+    }
+    const user = await Usuario.findOne(query).select("+contrasena");
+    if (!user || !(await verifyPassword(contrasena, user.contrasena))) {
+      return res.status(401).json({ error: "Correo o contrasena incorrectos" });
+    }
+    res.json({
+      mensaje: `Bienvenido ${user.nombre}`,
+      usuario: publicUser(user),
+      token: createToken(user._id),
+    });
+  })
+);
+
+app.post(
+  "/api/registro",
+  asyncRoute(async (req, res) => {
+    const body = req.body && typeof req.body === "object" ? req.body : {};
+    const nombre = typeof body.nombre === "string" ? body.nombre.trim() : "";
+    const apellido = typeof body.apellido === "string" ? body.apellido.trim() : "";
+    const correo = typeof body.correo === "string" ? body.correo.trim().toLowerCase() : "";
+    const telefono = normalizePhone(body.telefono);
+    const contrasena = typeof body.contrasena === "string" ? body.contrasena : "";
+    if (!nombre || (correo && !validEmail.test(correo)) || contrasena.length < 8) {
+      return res.status(400).json({
+        error: "Ingresa un nombre, un correo válido y una contraseña de al menos 8 caracteres",
+      });
+    }
+    if (telefono && !validPhone.test(telefono)) {
+      return res.status(400).json({ error: "Ingresa un teléfono válido" });
+    }
+    if (!correo && !telefono) {
+      return res.status(400).json({ error: "Indica un correo electrónico o teléfono para iniciar sesión" });
+    }
+    if (correo && await Usuario.exists({ correo })) {
+      return res.status(409).json({ error: "Ese correo ya está registrado" });
+    }
+    if (telefono && await Usuario.exists({ telefono })) {
+      return res.status(409).json({ error: "Ese teléfono ya está registrado" });
+    }
+
+    const user = await Usuario.create({
+      nombre,
+      apellido,
+      ...(correo ? { correo } : {}),
+      contrasena: await hashPassword(contrasena),
+      ...(telefono ? { telefono } : {}),
+      rol: "inquilino",
+    });
+    res.status(201).json({
+      mensaje: `Cuenta creada. Bienvenido ${user.nombre}`,
+      usuario: publicUser(user),
+      token: createToken(user._id),
+    });
+    if (user.correo) {
+      const mail = mailBienvenida(user);
+      void enviarMail(mail.para, mail.asunto, mail.html).catch((error) =>
+        console.error("No se pudo enviar el mail de bienvenida:", error.message)
+      );
+    }
+  })
+);
+
+app.get(
+  "/api/auth/me",
+  authenticate,
+  asyncRoute(async (req, res) => {
+    res.json({ usuario: publicUser(req.user) });
+  })
+);
+
+app.get(
+  "/api/notificaciones",
+  authenticate,
+  asyncRoute(async (req, res) => {
+    const notifications = await Notificacion.find({ usuarioId: req.user._id })
       .sort({ fecha: -1 })
       .limit(50)
       .lean();
-    res.json(registros);
-  } catch (error) {
-    console.error("Error al consultar registros de auditoria:", error);
-    res.status(500).json({ error: "No se pudieron obtener los registros de auditoria" });
-  }
-});
+    res.json(notifications);
+  })
+);
 
-app.put("/api/reservas/:id/accion", async (req, res) => {
-  try {
+app.put(
+  "/api/notificaciones/leer",
+  authenticate,
+  asyncRoute(async (req, res) => {
+    const result = await Notificacion.updateMany(
+      { usuarioId: req.user._id, leida: false },
+      { $set: { leida: true } }
+    );
+    res.json({ modificadas: result.modifiedCount });
+  })
+);
+
+app.get(
+  "/api/auditoria",
+  authenticate,
+  requireRole("admin"),
+  asyncRoute(async (_req, res) => {
+    const entries = await LogAuditoria.find()
+      .sort({ fecha: -1 })
+      .limit(50)
+      .lean();
+    res.json(entries);
+  })
+);
+
+app.get(
+  "/api/propiedades",
+  asyncRoute(async (_req, res) => {
+    const properties = await Propiedad.find({ estado: "disponible" })
+      .populate("propietario", "nombre apellido")
+      .sort({ _id: -1 })
+      .lean();
+    const withPhotos = await addPropertyPhotos(properties);
+    res.json(await addPropertyRatings(withPhotos));
+  })
+);
+
+app.get(
+  "/api/propiedades/:id",
+  asyncRoute(async (req, res) => {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: "ID de propiedad invalido" });
+    }
+    const property = await Propiedad.findOne({
+      _id: req.params.id,
+      estado: "disponible",
+    })
+      .populate("propietario", "nombre apellido")
+      .lean();
+    if (!property) {
+      return res.status(404).json({ error: "Propiedad no encontrada" });
+    }
+    const photos = await Foto.find({ propiedad: property._id }).lean();
+    const [ratedProperty] = await addPropertyRatings([{ ...property, fotos: photos }]);
+    res.json(ratedProperty);
+  })
+);
+
+app.get(
+  "/api/propiedades/:propiedadId/reservas",
+  asyncRoute(async (req, res) => {
+    if (!mongoose.Types.ObjectId.isValid(req.params.propiedadId)) {
+      return res.status(400).json({ error: "ID de propiedad invalido" });
+    }
+    const reservations = await Reserva.find({
+      propiedad: req.params.propiedadId,
+      estado: { $nin: ["cancelada", "rechazada"] },
+    }).select("fechaInicio fechaFin estado");
+    res.json(
+      reservations.map((reservation) => ({
+        id: reservation._id,
+        checkIn: reservation.fechaInicio,
+        checkOut: reservation.fechaFin,
+        estado: reservation.estado,
+      }))
+    );
+  })
+);
+
+app.post(
+  "/api/reservas",
+  authenticate,
+  requireRole("inquilino"),
+  asyncRoute(async (req, res) => {
+    const { propiedadId, checkIn, checkOut, metodoPago = "efectivo" } = req.body;
+    if (
+      !mongoose.Types.ObjectId.isValid(propiedadId) ||
+      !checkIn ||
+      !checkOut ||
+      !paymentMethods.has(metodoPago)
+    ) {
+      return res.status(400).json({ error: "Los datos de la reserva son invalidos" });
+    }
+    const start = parseDateOnly(checkIn);
+    const end = parseDateOnly(checkOut);
+    if (!start || !end || checkIn < todayInGoya() || checkOut <= checkIn) {
+      return res.status(400).json({ error: "Las fechas de la reserva son invalidas" });
+    }
+
+    const property = await Propiedad.findOne({
+      _id: propiedadId,
+      estado: "disponible",
+    });
+    if (!property) {
+      return res.status(404).json({ error: "Propiedad no disponible" });
+    }
+    const overlap = await Reserva.exists({
+      propiedad: property._id,
+      estado: { $nin: ["cancelada", "rechazada"] },
+      fechaInicio: { $lt: end },
+      fechaFin: { $gt: start },
+    });
+    if (overlap) {
+      return res.status(409).json({ error: "Esas fechas ya estan reservadas" });
+    }
+
+    const nights = Math.round((end - start) / 86400000);
+    const reservation = await Reserva.create({
+      propiedad: property._id,
+      turista: req.user._id,
+      fechaInicio: start,
+      fechaFin: end,
+      montoTotal: nights * property.precioPorNoche,
+      estado: "pendiente",
+    });
+    let payment;
+    try {
+      payment = await Pago.create({
+        reserva: reservation._id,
+        montoPagado: reservation.montoTotal,
+        metodoPago,
+        estado: "pendiente",
+      });
+    } catch (error) {
+      await Reserva.findByIdAndDelete(reservation._id);
+      throw error;
+    }
+
+    res.status(201).json({
+      mensaje: "Solicitud de reserva registrada. El pago queda pendiente de confirmacion.",
+      reserva: {
+        id: reservation._id,
+        propiedadId: property._id,
+        propiedadTitulo: property.titulo,
+        checkIn: reservation.fechaInicio,
+        checkOut: reservation.fechaFin,
+        montoTotal: reservation.montoTotal,
+        estado: reservation.estado,
+      },
+      pago: {
+        id: payment._id,
+        monto: payment.montoPagado,
+        metodoPago: payment.metodoPago,
+        estado: payment.estado,
+      },
+    });
+    void registrarNotificacion(
+      property.propietario,
+      `Nueva solicitud de reserva para ${property.titulo}.`,
+      "reserva_pendiente"
+    ).catch((error) =>
+      console.error("No se pudo crear la notificacion de reserva:", error.message)
+    );
+    if (req.user.correo) {
+      const mail = mailReserva({
+        usuario: req.user,
+        propiedad: property,
+        reserva: reservation,
+        metodoPago,
+      });
+      void enviarMail(mail.para, mail.asunto, mail.html).catch((error) =>
+        console.error("No se pudo enviar el mail de reserva:", error.message)
+      );
+    }
+  })
+);
+
+app.get(
+  "/api/reservas/mis",
+  authenticate,
+  requireRole("inquilino"),
+  asyncRoute(async (req, res) => {
+    const reservations = await Reserva.find({ turista: req.user._id })
+      .populate("propiedad", "titulo")
+      .sort({ fechaCreacion: -1 })
+      .lean();
+    res.json(
+      reservations.map((reservation) => ({
+        id: reservation._id,
+        propiedadId: reservation.propiedad?._id,
+        propiedadTitulo: reservation.propiedad?.titulo || "Propiedad",
+        checkIn: reservation.fechaInicio,
+        checkOut: reservation.fechaFin,
+        montoTotal: reservation.montoTotal,
+        estado: reservation.estado,
+        calificacion: reservation.calificacion ?? null,
+        comentario: reservation.comentario || "",
+        puedeCalificar:
+          reservation.estado === "confirmada" &&
+          reservationHasEnded(reservation),
+      }))
+    );
+  })
+);
+
+app.post(
+  "/api/reservas/:id/calificar",
+  authenticate,
+  requireRole("inquilino"),
+  asyncRoute(async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(400).json({ error: "ID de reserva invalido" });
     }
+    const { calificacion, comentario = "" } = req.body || {};
+    if (
+      typeof calificacion !== "number" ||
+      !Number.isInteger(calificacion) ||
+      calificacion < 1 ||
+      calificacion > 5 ||
+      typeof comentario !== "string" ||
+      comentario.trim().length > 300
+    ) {
+      return res.status(400).json({
+        error: "La calificacion debe ser de 1 a 5 y el comentario no superar 300 caracteres",
+      });
+    }
 
-    const { accion, anfitrionId } = req.body;
-    if (!["confirmar", "rechazar", "recordatorio"].includes(accion)) {
+    const reservation = await Reserva.findOne({
+      _id: req.params.id,
+      turista: req.user._id,
+    });
+    if (!reservation) {
+      return res.status(404).json({ error: "Reserva no encontrada" });
+    }
+    if (reservation.estado !== "confirmada") {
+      return res.status(409).json({
+        error: "Solo se pueden calificar reservas confirmadas y finalizadas",
+      });
+    }
+    if (!reservationHasEnded(reservation)) {
+      return res.status(409).json({ error: "Podras calificar la reserva despues de la fecha de salida" });
+    }
+    if (reservation.calificacion != null) {
+      return res.status(409).json({ error: "Esta reserva ya fue calificada" });
+    }
+
+    const ratedReservation = await Reserva.findOneAndUpdate(
+      {
+        _id: reservation._id,
+        turista: req.user._id,
+        calificacion: null,
+        estado: "confirmada",
+        fechaFin: { $lt: parseDateOnly(todayInGoya()) },
+      },
+      { $set: { calificacion, comentario: comentario.trim() } },
+      { returnDocument: "after", runValidators: true }
+    );
+    if (!ratedReservation) {
+      return res.status(409).json({
+        error: "Esta reserva ya fue calificada o no se puede calificar",
+      });
+    }
+    res.json({
+      mensaje: "Gracias por calificar tu estadia",
+      calificacion: ratedReservation.calificacion,
+      comentario: ratedReservation.comentario,
+    });
+  })
+);
+
+app.put(
+  "/api/reservas/:id/cancelar",
+  authenticate,
+  requireRole("inquilino"),
+  asyncRoute(async (req, res) => {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: "ID de reserva invalido" });
+    }
+    const reservation = await Reserva.findOneAndUpdate(
+      {
+        _id: req.params.id,
+        turista: req.user._id,
+        estado: { $ne: "cancelada" },
+      },
+      { $set: { estado: "cancelada" } },
+      { new: true }
+    );
+    if (!reservation) {
+      const exists = await Reserva.exists({ _id: req.params.id });
+      return res
+        .status(exists ? 403 : 404)
+        .json({ error: exists ? "No podes cancelar una reserva ajena o ya cancelada" : "Reserva no encontrada" });
+    }
+    await Pago.updateMany({ reserva: reservation._id }, { $set: { estado: "cancelado" } });
+    res.json({ mensaje: "Reserva cancelada correctamente" });
+  })
+);
+
+app.put(
+  "/api/reservas/:id/accion",
+  authenticate,
+  requireRole("anfitrion"),
+  asyncRoute(async (req, res) => {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: "ID de reserva invalido" });
+    }
+    const estados = { confirmar: "confirmada", rechazar: "rechazada" };
+    const estado = estados[req.body?.accion];
+    if (!estado) {
       return res.status(400).json({ error: "Accion de reserva invalida" });
     }
-    if (!anfitrionId || !mongoose.Types.ObjectId.isValid(anfitrionId)) {
-      return res.status(400).json({ error: "Falta identificacion del anfitrion" });
-    }
 
-    const anfitrion = await Usuario.findOne({ _id: anfitrionId, rol: "anfitrion" });
-    if (!anfitrion) return res.status(403).json({ error: "Anfitrion no autorizado" });
-
-    const reserva = await Reserva.findById(req.params.id)
+    const reservation = await Reserva.findById(req.params.id)
       .populate("propiedad", "titulo propietario")
       .populate("turista", "nombre apellido correo telefono");
-    if (!reserva) return res.status(404).json({ error: "Reserva no encontrada" });
-    if (String(reserva.propiedad.propietario) !== String(anfitrion._id)) {
-      return res.status(403).json({ error: "No puedes gestionar esta reserva" });
+    if (!reservation) {
+      return res.status(404).json({ error: "Reserva no encontrada" });
     }
-    if (accion === "recordatorio" && reserva.estado !== "confirmada") {
-      return res.status(409).json({ error: "Solo se pueden recordar reservas confirmadas" });
+    if (String(reservation.propiedad?.propietario) !== String(req.user._id)) {
+      return res.status(403).json({ error: "No podes gestionar esta reserva" });
     }
-    if (accion !== "recordatorio" && reserva.estado !== "pendiente") {
+    if (reservation.estado !== "pendiente") {
       return res.status(409).json({ error: "La reserva ya no esta pendiente" });
     }
 
-    const estados = { confirmar: "confirmada", rechazar: "rechazada" };
-    if (estados[accion]) {
-      const estadoAnterior = reserva.estado;
-      reserva.estado = estados[accion];
-      await reserva.save();
-      await registrarLog({
-        usuario: anfitrion.correo || anfitrion.nombre || anfitrion._id,
-        rol: anfitrion.rol,
-        accion: "UPDATE_RESERVA",
-        detalle: `Reserva ${reserva._id}: ${estadoAnterior} -> ${reserva.estado}`,
-        ip: req.ip,
-      });
-    } else if (accion === "recordatorio") {
-      await registrarLog({
-        usuario: anfitrion.correo || anfitrion.nombre || anfitrion._id,
-        rol: anfitrion.rol,
-        accion: "RECORDATORIO_RESERVA",
-        detalle: `Recordatorio enviado para la reserva ${reserva._id}`,
-        ip: req.ip,
-      });
-    }
-
-    const canal = accion === "recordatorio" ? "recordatorio_reserva" : `reserva_${reserva.estado}`;
-    const mensaje = accion === "recordatorio"
-      ? `Recordatorio enviado para tu reserva en ${reserva.propiedad.titulo}.`
-      : `Tu reserva para ${reserva.propiedad.titulo} fue ${reserva.estado === "confirmada" ? "confirmada" : "rechazada"}.`;
-    const eventos = await registrarNotificacion(
-      [reserva.turista._id],
-      {
-        canal,
-        mensaje,
-      }
+    reservation.estado = estado;
+    await reservation.save();
+    void registrarNotificacion(
+      reservation.turista._id,
+      `Tu reserva para ${reservation.propiedad.titulo} fue ${
+        estado === "confirmada" ? "confirmada" : "rechazada"
+      }.`,
+      `reserva_${estado}`
+    ).catch((error) =>
+      console.error("No se pudo crear la notificacion de reserva:", error.message)
     );
-
-    let emailEnviado = false;
-    let emailModoPrueba = false;
-    try {
-      const mail = mailEstadoReserva({
-        usuario: reserva.turista,
-        propiedad: reserva.propiedad,
-        reserva,
-        estado: accion === "recordatorio" ? "recordatorio" : reserva.estado,
-      });
-      const resultadoEmail = await enviarMail(mail.para, mail.asunto, mail.html);
-      emailEnviado = resultadoEmail?.enviado || false;
-      emailModoPrueba = resultadoEmail?.modoPrueba || false;
-    } catch (error) {
-      console.error("No se pudo enviar la notificacion de reserva:", error.message);
-    }
-
+    void registrarAuditoria({
+      usuario: req.user,
+      accion: "UPDATE_RESERVA",
+      detalle: `Reserva ${reservation._id}: ${estado}`,
+      ip: req.ip,
+    }).catch((error) =>
+      console.error("No se pudo registrar la accion de reserva:", error.message)
+    );
+    const mensaje = estado === "confirmada"
+      ? "Reserva confirmada correctamente"
+      : "Reserva rechazada correctamente";
     res.json({
       mensaje,
-      reserva: {
-        id: reserva._id,
-        estado: reserva.estado,
-        propiedadId: reserva.propiedad._id,
-        propiedadTitulo: reserva.propiedad.titulo,
-        turista: reserva.turista,
-      },
-      notificacion: {
-        enviada: emailEnviado,
-        modoPrueba: emailModoPrueba,
-        canal: "email",
-        telefono: reserva.turista.telefono,
-      },
-      evento: eventos[0],
+      reserva: { id: reservation._id, estado: reservation.estado },
     });
-  } catch (error) {
-    console.error("Error al gestionar la reserva:", error);
-    res.status(500).json({ error: "No se pudo gestionar la reserva" });
-  }
-});
 
-// ---------- SEED (datos de ejemplo) ----------
-app.post("/api/seed", async (req, res) => {
-  res.json({ mensaje: "El seed corre automatico al iniciar el servidor" });
-});
-
-// ---------- PROPIEDADES (creacion con control de rol) ----------
-app.post("/api/propiedades", async (req, res) => {
-  try {
-  const usuarioId = req.headers["x-usuario-id"] || req.body.usuarioId;
-  if (!usuarioId) return res.status(401).json({ error: "Falta identificacion de usuario" });
-  const usuario = await Usuario.findById(usuarioId);
-  if (!usuario) return res.status(404).json({ error: "Usuario no encontrado" });
-  if (usuario.rol !== "anfitrion") return res.status(403).json({ error: "No tenes permisos para publicar propiedades" });
-  const { titulo, descripcion, direccion, maxHuespedes, precioPorNoche, estado, foto } = req.body;
-  if (!titulo || precioPorNoche === undefined) return res.status(400).json({ error: "Faltan datos de la propiedad" });
-  const precio = Number(precioPorNoche);
-  if (Number.isNaN(precio) || precio < 0) return res.status(400).json({ error: "Precio invalido" });
-  const nueva = await Propiedad.create({
-    propietario: usuario._id,
-    titulo,
-    descripcion: descripcion || "",
-    direccion: direccion || "",
-    maxHuespedes: maxHuespedes || 4,
-    precioPorNoche: precio,
-    estado: estado || "pending_review",
-  });
-  if (foto) await Foto.create({ propiedad: nueva._id, archivo: foto, descripcion: "Foto principal" });
-  if (nueva.estado === "pending_review") {
-    const administradores = await Usuario.find({ rol: "admin" }).select("_id");
-    const eventos = await registrarNotificacion(
-      [usuario._id, ...administradores.map((admin) => admin._id)],
-      {
-        canal: "propiedad_pendiente",
-        mensaje: `Nueva propiedad pendiente de revisión: ${nueva.titulo}.`,
-      }
-    );
-    res.status(201).json({
-      mensaje: `Propiedad "${titulo}" publicada`,
-      propiedad: nueva,
-      evento: eventos.find((evento) => String(evento.usuarioId) === String(usuario._id)),
-    });
-    return;
-  }
-  res.status(201).json({ mensaje: `Propiedad "${titulo}" publicada`, propiedad: nueva });
-  } catch (error) { console.error("Error al publicar la propiedad:", error); res.status(500).json({ error: "No se pudo publicar la propiedad" }); }
-});
-
-// ---------- RESERVAS POR TURISTA ----------
-app.get("/api/reservas/turista/:turistaId", async (req, res) => {
-  try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.turistaId)) {
-      return res.status(400).json({ error: "ID de usuario invalido" });
+    if (reservation.turista?.correo) {
+      const mail = mailEstadoReserva({
+        usuario: reservation.turista,
+        propiedad: reservation.propiedad,
+        reserva: reservation,
+        estado,
+      });
+      void enviarMail(mail.para, mail.asunto, mail.html).catch((error) =>
+        console.error("No se pudo enviar la actualización de la reserva:", error.message)
+      );
     }
-    const reservas = await Reserva.find({ turista: req.params.turistaId }).populate("propiedad", "titulo direccion precioPorNoche").sort({ fechaCreacion: -1 });
-    res.json(reservas.map((r) => ({
-      id: r._id,
-      propiedadId: r.propiedad?._id || r.propiedad,
-      propiedadTitulo: r.propiedad?.titulo || "Propiedad",
-      checkIn: r.fechaInicio,
-      checkOut: r.fechaFin,
-      montoTotal: r.montoTotal,
-      estado: r.estado,
-    })));
-  } catch (error) {
-    console.error("Error al obtener reservas del turista:", error);
-    res.status(500).json({ error: "No se pudieron obtener las reservas" });
-  }
-});
+  })
+);
 
-// ---------- CANCELAR RESERVA ----------
-app.put("/api/reservas/:id/cancelar", async (req, res) => {
-  try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-      return res.status(400).json({ error: "ID de reserva invalido" });
-    }
-    const { turistaId } = req.body;
-    if (!turistaId) return res.status(400).json({ error: "Falta identificacion de usuario" });
-    const reserva = await Reserva.findById(req.params.id);
-    if (!reserva) return res.status(404).json({ error: "Reserva no encontrada" });
-    if (String(reserva.turista) !== String(turistaId)) return res.status(403).json({ error: "No podes cancelar una reserva de otro usuario" });
-    if (reserva.estado === "cancelada") return res.status(409).json({ error: "La reserva ya esta cancelada" });
-    reserva.estado = "cancelada";
-    await reserva.save();
-    res.json({ mensaje: "Reserva cancelada correctamente", reserva });
-  } catch (error) {
-    console.error("Error al cancelar la reserva:", error);
-    res.status(500).json({ error: "No se pudo cancelar la reserva" });
-  }
-});
-
-// ---------- ADMINISTRACION ----------
-app.get("/api/admin/propietarios", async (req, res) => {
-  try {
-    const anfitriones = await Usuario.find({ rol: "anfitrion" }).select("nombre apellido correo telefono");
-    const conteos = await Propiedad.aggregate([{ $group: { _id: "$propietario", count: { $sum: 1 } } }]);
-    const mapa = new Map(conteos.map((c) => [String(c._id), c.count]));
-    res.json(anfitriones.map((u) => ({
-      _id: u._id,
-      nombre: u.nombre,
-      apellido: u.apellido,
-      correo: u.correo,
-      telefono: u.telefono,
-      propiedades: mapa.get(String(u._id)) || 0,
-    })));
-  } catch (error) {
-    console.error("Error al obtener propietarios:", error);
-    res.status(500).json({ error: "No se pudieron obtener los propietarios" });
-  }
-});
-
-app.get("/api/admin/propiedades", async (req, res) => {
-  try {
-    const propiedades = await Propiedad.find().populate("propietario", "nombre apellido correo telefono").sort({ createdAt: -1 });
-    res.json(propiedades);
-  } catch (error) {
-    console.error("Error al obtener propiedades (admin):", error);
-    res.status(500).json({ error: "No se pudieron obtener las propiedades" });
-  }
-});
-
-app.get("/api/notificaciones/:usuarioId", async (req, res) => {
-  try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.usuarioId)) {
-      return res.status(400).json({ error: "ID de usuario invalido" });
-    }
-    const notificaciones = await Notificacion.find({ usuarioId: req.params.usuarioId })
-      .sort({ fecha: -1 })
+app.get(
+  "/api/propietario/panel",
+  authenticate,
+  requireRole("anfitrion"),
+  asyncRoute(async (req, res) => {
+    const properties = await Propiedad.find({ propietario: req.user._id }).lean();
+    const propertyIds = properties.map((property) => property._id);
+    const reservations = await Reserva.find({
+      propiedad: { $in: propertyIds },
+      estado: { $ne: "cancelada" },
+    })
+      .populate("propiedad", "titulo precioPorNoche")
+      .populate("turista", "nombre apellido telefono correo")
+      .sort({ fechaCreacion: -1 })
       .lean();
-    res.json(notificaciones);
-  } catch (error) {
-    console.error("Error al obtener notificaciones:", error);
-    res.status(500).json({ error: "No se pudieron obtener las notificaciones" });
-  }
-});
+    const stats = properties.map((property) => {
+      const relevant = reservations.filter(
+        (reservation) =>
+          String(reservation.propiedad?._id) === String(property._id)
+      );
+      const nights = relevant.reduce(
+        (total, reservation) =>
+          total + Math.max(0, Math.round((reservation.fechaFin - reservation.fechaInicio) / 86400000)),
+        0
+      );
+      const gross = nights * property.precioPorNoche;
+      return {
+        propiedadId: property._id,
+        titulo: property.titulo,
+        precioPorNoche: property.precioPorNoche,
+        reservas: relevant.length,
+        noches: nights,
+        ingresos: gross,
+        liquidacion: gross * 0.9,
+      };
+    });
+    res.json({
+      propiedades: properties,
+      reservas: reservations.map((reservation) => ({
+        id: reservation._id,
+        propiedadId: reservation.propiedad?._id,
+        propiedadTitulo: reservation.propiedad?.titulo,
+        checkIn: reservation.fechaInicio,
+        checkOut: reservation.fechaFin,
+        estado: reservation.estado,
+        turista: reservation.turista,
+      })),
+      estadisticas: stats,
+    });
+  })
+);
 
-app.put("/api/notificaciones/leer/:usuarioId", async (req, res) => {
-  try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.usuarioId)) {
-      return res.status(400).json({ error: "ID de usuario invalido" });
+app.post(
+  "/api/propiedades",
+  authenticate,
+  requireRole("anfitrion"),
+  asyncRoute(async (req, res) => {
+    const { titulo, descripcion, direccion, maxHuespedes, precioPorNoche, foto } =
+      req.body;
+    const price = Number(precioPorNoche);
+    const guests = Number(maxHuespedes || 4);
+    if (!String(titulo || "").trim() || !Number.isFinite(price) || price < 0 ||
+        !Number.isInteger(guests) || guests < 1) {
+      return res.status(400).json({ error: "Los datos de la propiedad son invalidos" });
     }
-    const resultado = await Notificacion.updateMany(
-      { usuarioId: req.params.usuarioId, leida: false },
-      { $set: { leida: true } }
+    const property = await Propiedad.create({
+      propietario: req.user._id,
+      titulo: String(titulo).trim(),
+      descripcion: String(descripcion || "").trim(),
+      direccion: String(direccion || "").trim(),
+      maxHuespedes: guests,
+      precioPorNoche: price,
+      estado: "pending_review",
+    });
+    if (foto) {
+      await Foto.create({
+        propiedad: property._id,
+        archivo: String(foto),
+        descripcion: "Foto principal",
+      });
+    }
+    res.status(201).json({ mensaje: "Propiedad enviada a revision", propiedad: property });
+  })
+);
+
+app.put(
+  "/api/propietario/propiedades/:id",
+  authenticate,
+  requireRole("anfitrion"),
+  asyncRoute(async (req, res) => {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: "ID de propiedad invalido" });
+    }
+    const property = await Propiedad.findOne({
+      _id: req.params.id,
+      propietario: req.user._id,
+    });
+    if (!property) return res.status(404).json({ error: "Propiedad no encontrada" });
+    const { titulo, descripcion, direccion, maxHuespedes, precioPorNoche } = req.body;
+    if (titulo !== undefined) property.titulo = String(titulo).trim();
+    if (descripcion !== undefined) property.descripcion = String(descripcion).trim();
+    if (direccion !== undefined) property.direccion = String(direccion).trim();
+    if (maxHuespedes !== undefined) {
+      const guests = Number(maxHuespedes);
+      if (!Number.isInteger(guests) || guests < 1) {
+        return res.status(400).json({ error: "Cantidad de huespedes invalida" });
+      }
+      property.maxHuespedes = guests;
+    }
+    if (precioPorNoche !== undefined) {
+      const price = Number(precioPorNoche);
+      if (!Number.isFinite(price) || price < 0) {
+        return res.status(400).json({ error: "Precio invalido" });
+      }
+      property.precioPorNoche = price;
+    }
+    await property.save();
+    res.json({ mensaje: "Propiedad actualizada", propiedad: property });
+  })
+);
+
+app.delete(
+  "/api/propietario/propiedades/:id",
+  authenticate,
+  requireRole("anfitrion"),
+  asyncRoute(async (req, res) => {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: "ID de propiedad invalido" });
+    }
+    const property = await Propiedad.findOne({
+      _id: req.params.id,
+      propietario: req.user._id,
+    });
+    if (!property) return res.status(404).json({ error: "Propiedad no encontrada" });
+    if (await Reserva.exists({ propiedad: property._id, estado: { $ne: "cancelada" } })) {
+      return res.status(409).json({ error: "No se puede eliminar una propiedad con reservas activas" });
+    }
+    const photos = await Foto.find({ propiedad: property._id }).lean();
+    await Foto.deleteMany({ propiedad: property._id });
+    await property.deleteOne();
+    await removeStoredPhotoFiles(photos);
+    res.json({ mensaje: "Propiedad eliminada" });
+  })
+);
+
+app.get(
+  "/api/admin/panel",
+  authenticate,
+  requireRole("admin"),
+  asyncRoute(async (_req, res) => {
+    const [properties, reservations] = await Promise.all([
+      Propiedad.find()
+        .populate("propietario", "nombre apellido correo telefono")
+        .sort({ _id: -1 })
+        .lean(),
+      Reserva.find()
+        .populate("propiedad", "titulo")
+        .populate("turista", "nombre apellido")
+        .sort({ fechaCreacion: -1 })
+        .lean(),
+    ]);
+    const withPhotos = await addPropertyPhotos(properties);
+    res.json({ propiedades: withPhotos, reservas: reservations });
+  })
+);
+
+app.get(
+  "/api/admin/propietarios",
+  authenticate,
+  requireRole("admin"),
+  asyncRoute(async (_req, res) => {
+    const owners = await Usuario.find({ rol: "anfitrion" })
+      .select("nombre apellido correo telefono")
+      .lean();
+    const counts = await Propiedad.aggregate([
+      { $group: { _id: "$propietario", count: { $sum: 1 } } },
+    ]);
+    const countByOwner = new Map(counts.map((item) => [String(item._id), item.count]));
+    res.json(
+      owners.map((owner) => ({
+        ...owner,
+        propiedades: countByOwner.get(String(owner._id)) || 0,
+      }))
     );
-    res.json({ modificadas: resultado.modifiedCount });
-  } catch (error) {
-    console.error("Error al marcar notificaciones como leidas:", error);
-    res.status(500).json({ error: "No se pudieron marcar las notificaciones como leidas" });
+  })
+);
+
+app.put(
+  "/api/admin/propiedades/:id",
+  authenticate,
+  requireRole("admin"),
+  imageUpload.array("images", 10),
+  asyncRoute(async (req, res) => {
+    const files = uploadedFiles(req);
+    const rejectRequest = async (message) => {
+      await removeUploadedFiles(files);
+      return res.status(400).json({ error: message });
+    };
+
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return rejectRequest("ID de propiedad invalido");
+    }
+    const property = await Propiedad.findById(req.params.id);
+    if (!property) {
+      await removeUploadedFiles(files);
+      return res.status(404).json({ error: "Propiedad no encontrada" });
+    }
+
+    for (const file of files) {
+      if (!(await isValidImageContent(file))) {
+        return rejectRequest("El contenido de uno de los archivos no es una imagen valida");
+      }
+    }
+
+    let keepPhotoIds;
+    if (req.body.keepPhotoIds !== undefined) {
+      try {
+        keepPhotoIds =
+          typeof req.body.keepPhotoIds === "string"
+            ? JSON.parse(req.body.keepPhotoIds)
+            : req.body.keepPhotoIds;
+      } catch {
+        return rejectRequest("La lista de imagenes actuales no es valida");
+      }
+      if (
+        !Array.isArray(keepPhotoIds) ||
+        keepPhotoIds.some((id) => !mongoose.Types.ObjectId.isValid(id))
+      ) {
+        return rejectRequest("La lista de imagenes actuales no es valida");
+      }
+      keepPhotoIds = [...new Set(keepPhotoIds.map(String))];
+    }
+
+    const existingPhotos = await Foto.find({ propiedad: property._id }).lean();
+    const existingPhotoIds = new Set(existingPhotos.map((photo) => String(photo._id)));
+    if (keepPhotoIds?.some((id) => !existingPhotoIds.has(id))) {
+      return rejectRequest("Una o mas imagenes no pertenecen a esta propiedad");
+    }
+    const photosToKeep =
+      keepPhotoIds === undefined
+        ? existingPhotos
+        : existingPhotos.filter((photo) => keepPhotoIds.includes(String(photo._id)));
+    const photosToRemove = existingPhotos.filter(
+      (photo) => !photosToKeep.some((keptPhoto) => String(keptPhoto._id) === String(photo._id))
+    );
+    if (photosToKeep.length + files.length > 10) {
+      return rejectRequest("Una propiedad puede tener un maximo de 10 imagenes");
+    }
+
+    const { titulo, descripcion, direccion, maxHuespedes, precioPorNoche, estado } =
+      req.body;
+    const normalizedTitle = titulo === undefined ? undefined : String(titulo).trim();
+    if (normalizedTitle !== undefined && !normalizedTitle) {
+      return rejectRequest("El titulo de la propiedad es obligatorio");
+    }
+    let guests;
+    if (maxHuespedes !== undefined) {
+      guests = Number(maxHuespedes);
+      if (!Number.isInteger(guests) || guests < 1) {
+        return rejectRequest("Cantidad de huespedes invalida");
+      }
+    }
+    let price;
+    if (precioPorNoche !== undefined) {
+      price = Number(precioPorNoche);
+      if (!Number.isFinite(price) || price < 0) {
+        return rejectRequest("Precio invalido");
+      }
+    }
+    if (estado !== undefined) {
+      if (!["pending_review", "disponible", "suspendida"].includes(estado)) {
+        return rejectRequest("Estado de propiedad invalido");
+      }
+    }
+
+    let addedPhotos = [];
+    try {
+      if (files.length) {
+        addedPhotos = await Foto.insertMany(
+          files.map((file) => ({
+            propiedad: property._id,
+            archivo: `/uploads/${file.filename}`,
+            descripcion: "",
+          }))
+        );
+      }
+      if (normalizedTitle !== undefined) property.titulo = normalizedTitle;
+      if (descripcion !== undefined) property.descripcion = String(descripcion).trim();
+      if (direccion !== undefined) property.direccion = String(direccion).trim();
+      if (guests !== undefined) property.maxHuespedes = guests;
+      if (price !== undefined) property.precioPorNoche = price;
+      if (estado !== undefined) property.estado = estado;
+      await property.save();
+      if (photosToRemove.length) {
+        await Foto.deleteMany({
+          propiedad: property._id,
+          _id: { $in: photosToRemove.map((photo) => photo._id) },
+        });
+      }
+    } catch (error) {
+      if (addedPhotos.length) {
+        await Foto.deleteMany({ _id: { $in: addedPhotos.map((photo) => photo._id) } });
+      }
+      await removeUploadedFiles(files);
+      throw error;
+    }
+
+    await removeStoredPhotoFiles(photosToRemove);
+    res.json({
+      mensaje: "Propiedad actualizada",
+      propiedad: {
+        ...property.toObject(),
+        fotos: [...photosToKeep, ...addedPhotos],
+        foto: addedPhotos[0]?.archivo || photosToKeep[0]?.archivo || null,
+      },
+    });
+  })
+);
+
+app.delete(
+  "/api/admin/propiedades/:id",
+  authenticate,
+  requireRole("admin"),
+  asyncRoute(async (req, res) => {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: "ID de propiedad invalido" });
+    }
+    const property = await Propiedad.findById(req.params.id);
+    if (!property) return res.status(404).json({ error: "Propiedad no encontrada" });
+    if (await Reserva.exists({ propiedad: property._id, estado: { $ne: "cancelada" } })) {
+      return res.status(409).json({ error: "No se puede eliminar una propiedad con reservas activas" });
+    }
+    const photos = await Foto.find({ propiedad: property._id }).lean();
+    await Foto.deleteMany({ propiedad: property._id });
+    await property.deleteOne();
+    await removeStoredPhotoFiles(photos);
+    res.json({ mensaje: "Propiedad eliminada" });
+  })
+);
+
+app.use((error, _req, res, _next) => {
+  console.error("Error en el API:", error);
+  if (
+    error?.name === "MongooseServerSelectionError" ||
+    error?.name === "MongoNetworkError" ||
+    error?.name === "MongoNetworkTimeoutError"
+  ) {
+    return res.status(503).json({
+      error: "La base de datos no esta disponible. Intenta nuevamente en unos momentos.",
+    });
   }
+  if (error instanceof multer.MulterError) {
+    const status = error.code === "LIMIT_FILE_SIZE" ? 413 : 400;
+    const message =
+      error.code === "LIMIT_FILE_SIZE"
+        ? "Cada imagen debe pesar 5 MB o menos"
+        : "La solicitud puede incluir hasta 10 imagenes";
+    return res.status(status).json({ error: message });
+  }
+  if (error?.code === "INVALID_IMAGE_TYPE") {
+    return res.status(400).json({ error: error.message });
+  }
+  if (error?.type === "entity.parse.failed") {
+    return res.status(400).json({ error: "El cuerpo de la solicitud no es JSON valido" });
+  }
+  if (error?.code === 11000) {
+    return res.status(409).json({ error: "El correo ya esta registrado" });
+  }
+  if (error instanceof mongoose.Error.ValidationError || error instanceof mongoose.Error.CastError) {
+    return res.status(400).json({ error: "Los datos enviados no son validos" });
+  }
+  res.status(500).json({ error: "Error interno del servidor" });
 });
-const PORT = 4000;
-app.listen(PORT, () => {
-  console.log(`Servidor backend escuchando en http://localhost:${PORT}`);
-});
 
+export default app;
 
+const startServer = async () => {
+  await ensureDatabase();
+  console.log("Conectado a la base de prueba configurada");
+  const port = Number(process.env.PORT) || 4000;
+  app.listen(port, () => {
+    console.log(`Servidor backend escuchando en http://localhost:${port}`);
+  });
+};
 
-
-
-
-
-
-
-
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  startServer().catch((error) => {
+    console.error("No se pudo iniciar el backend:", error);
+    process.exitCode = 1;
+  });
+}

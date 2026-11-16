@@ -1,7 +1,5 @@
-﻿import React, { useEffect, useState } from "react";
-import { MOCK_PROPERTIES } from "../mockData.js";
-
-const API = "";
+import React, { useEffect, useState } from "react";
+import { api } from "../api.js";
 
 const fmt = (n) => "$" + Number(n).toLocaleString("es-AR");
 
@@ -11,6 +9,22 @@ const QUICK_FILTERS = [
   { key: "wifi", label: "Wi-Fi" },
   { key: "parking", label: "Estacionamiento" },
 ];
+
+function getPropertyImages(property) {
+  const images = [
+    ...(Array.isArray(property.imagenes) ? property.imagenes : []),
+    ...(Array.isArray(property.fotos) ? property.fotos : []),
+  ]
+    .map((image) =>
+      typeof image === "string" ? image : image?.archivo || image?.url || image?.src
+    )
+    .filter((image) => typeof image === "string" && image.trim());
+  const primaryImage = property.foto || property.imagen;
+  if (typeof primaryImage === "string" && primaryImage.trim()) {
+    images.unshift(primaryImage);
+  }
+  return [...new Set(images)];
+}
 
 function mapPropiedad(p) {
   const descripcion = (p.descripcion || "").toLowerCase();
@@ -45,7 +59,7 @@ function mapPropiedad(p) {
     titulo,
     ubicacion: direccion,
     precio: p.precioPorNoche || 0,
-    imagen: p.foto || null,
+    imagenes: getPropertyImages(p),
     specs,
     tipo,
     zona,
@@ -54,20 +68,53 @@ function mapPropiedad(p) {
     wifi,
     parking,
     estado: p.estado || "",
+    descripcion: p.descripcion || "",
+    rating: Number(p.promedioCalificacion) || 0,
+    ratingCount: Number(p.cantidadResenas) || 0,
   };
 }
 
-export default function Home({ irALogin, usuario: usuarioProp }) {
-  const [usuario, setUsuario] = useState(() => {
-    if (usuarioProp !== undefined) return usuarioProp;
-    try {
-      const saved = localStorage.getItem("user");
-      return saved ? JSON.parse(saved) : null;
-    } catch {
-      return null;
-    }
-  });
+export default function Home({
+  irALogin,
+  usuario: usuarioProp,
+}) {
+  const [usuario, setUsuario] = useState(usuarioProp || null);
   const [propiedadDetalle, setPropiedadDetalle] = useState(null);
+  const [indiceImagen, setIndiceImagen] = useState(0);
+  const [imagenDetalleError, setImagenDetalleError] = useState(false);
+  useEffect(() => {
+    if (!propiedadDetalle) return undefined;
+
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") setPropiedadDetalle(null);
+      if (event.key === "ArrowLeft" && propiedadDetalle.imagenes.length > 1) {
+        event.preventDefault();
+        setIndiceImagen((index) =>
+          (index - 1 + propiedadDetalle.imagenes.length) %
+          propiedadDetalle.imagenes.length
+        );
+      }
+      if (event.key === "ArrowRight" && propiedadDetalle.imagenes.length > 1) {
+        event.preventDefault();
+        setIndiceImagen((index) => (index + 1) % propiedadDetalle.imagenes.length);
+      }
+    };
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [propiedadDetalle]);
+  useEffect(() => {
+    setIndiceImagen(0);
+    setImagenDetalleError(false);
+  }, [propiedadDetalle]);
+  useEffect(() => {
+    setImagenDetalleError(false);
+  }, [indiceImagen]);
   useEffect(() => {
     if (usuarioProp !== undefined) setUsuario(usuarioProp);
   }, [usuarioProp]);
@@ -85,11 +132,22 @@ export default function Home({ irALogin, usuario: usuarioProp }) {
   const [favoritos, setFavoritos] = useState(new Set());
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      setPropiedades(MOCK_PROPERTIES.map(mapPropiedad));
-      setCargando(false);
-    }, 250);
-    return () => window.clearTimeout(timer);
+    let active = true;
+    api("/api/propiedades")
+      .then((items) => {
+        if (active) setPropiedades(items.map(mapPropiedad));
+      })
+      .catch((requestError) => {
+        if (active) {
+          setError(requestError.message || "No se pudieron cargar las propiedades");
+        }
+      })
+      .finally(() => {
+        if (active) setCargando(false);
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   const toggleFiltro = (key) =>
@@ -121,15 +179,27 @@ export default function Home({ irALogin, usuario: usuarioProp }) {
   return (
     <>
     <div className="mitula-home">
-      <div className="mt-topbar">
-        <div className="mt-brand">
-          Goya Recibe
+      <section className="home-hero" aria-labelledby="home-hero-title">
+        <img
+          className="home-hero-image"
+          src="/images/goya-turismo-hero.png"
+          alt="Atardecer junto al río en Goya"
+        />
+        <div className="home-hero-overlay" aria-hidden="true" />
+        <div className="home-hero-content">
+          <span className="home-hero-eyebrow">Corrientes · Argentina</span>
+          <h1 id="home-hero-title">
+            Goya
+            <span>Recibe</span>
+          </h1>
         </div>
-      </div>
+      </section>
+
+      <p className="home-description">
+        Plataforma para reservar alquileres de Casas, Quintas y Cabañas para turismo local.
+      </p>
 
       <section className="mt-filterbar">
-        <div className="mt-filter-title">Esta es una plataforma de reserva de alquileres casa y quintas solo para el turismo local</div>
-
         <div className="mt-quick-filters">
           {QUICK_FILTERS.map((f) => (
             <button
@@ -182,10 +252,10 @@ export default function Home({ irALogin, usuario: usuarioProp }) {
           {resultados.map((p) => (
             <article className="mt-card" key={p.id}>
               <div className="mt-card-img-wrap">
-                {p.imagen ? (
+                {p.imagenes[0] ? (
                   <img
                     className="mt-card-img"
-                    src={p.imagen}
+                    src={p.imagenes[0]}
                     alt={p.titulo}
                     onError={handleImgError}
                   />
@@ -199,7 +269,7 @@ export default function Home({ irALogin, usuario: usuarioProp }) {
                     <span>Imagen no disponible</span>
                   </div>
                 )}
-                {p.imagen && (
+                {p.imagenes[0] && (
                   <div className="mt-card-placeholder">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
                       <rect x="3" y="3" width="18" height="18" rx="3" />
@@ -223,10 +293,17 @@ export default function Home({ irALogin, usuario: usuarioProp }) {
 
               <div className="mt-card-body">
                 <h3 className="mt-card-title">{p.titulo}</h3>
-                <div className="mt-rating">
-                  {"★".repeat(Math.round(p.rating || 5))}
-                  <span>{Number(p.rating || 5).toFixed(1)}</span>
-                </div>
+                {p.ratingCount > 0 ? (
+                  <div
+                    className="mt-rating"
+                    aria-label={`Calificación promedio ${p.rating.toFixed(1)} de 5, ${p.ratingCount} reseñas`}
+                  >
+                    <span className="rating-stars-display" aria-hidden="true">★</span>
+                    <span>{p.rating.toFixed(1)} ({p.ratingCount})</span>
+                  </div>
+                ) : (
+                  <p className="mt-rating-empty">Sin calificaciones aún</p>
+                )}
 
                 <div className="mt-price-row">
                   <span className="mt-price">{fmt(p.precio)}</span>
@@ -258,24 +335,97 @@ export default function Home({ irALogin, usuario: usuarioProp }) {
     </div>
 
       {propiedadDetalle && (
-        <div className="modal-overlay" onClick={() => setPropiedadDetalle(null)}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
-            <h3>{propiedadDetalle.titulo}</h3>
-            <p>{propiedadDetalle.ubicacion}</p>
-            <p>{fmt(propiedadDetalle.precio)} / noche</p>
-            <p>{propiedadDetalle.specs.join(" • ")}</p>
-            {propiedadDetalle.imagen && (
-              <img
-                src={propiedadDetalle.imagen}
-                alt={propiedadDetalle.titulo}
-                style={{ maxWidth: "100%", borderRadius: "8px", marginTop: "8px" }}
-                onError={(e) => e.currentTarget.classList.add("hidden")}
-              />
-            )}
-            <div className="modal-actions" style={{ marginTop: "12px" }}>
-              <button className="btn-secondary" onClick={() => setPropiedadDetalle(null)}>
+        <div
+          className="modal-overlay property-detail-overlay"
+          onClick={() => setPropiedadDetalle(null)}
+        >
+          <div
+            className="modal-card property-detail-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="property-detail-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="property-detail-modal-header">
+              <button
+                type="button"
+                className="btn-secondary property-detail-close"
+                onClick={() => setPropiedadDetalle(null)}
+                aria-label="Cerrar detalles de la propiedad"
+                autoFocus
+              >
                 Cerrar
               </button>
+            </div>
+            <div className="property-detail-content">
+              <h3 id="property-detail-title">{propiedadDetalle.titulo}</h3>
+              <p>{propiedadDetalle.ubicacion}</p>
+              <p>{propiedadDetalle.descripcion}</p>
+              <p>{fmt(propiedadDetalle.precio)} / noche</p>
+              <p>{propiedadDetalle.specs.join(" • ")}</p>
+              {propiedadDetalle.ratingCount > 0 ? (
+                <p className="property-detail-rating">
+                  <span className="rating-stars-display" aria-hidden="true">★</span>{" "}
+                  {propiedadDetalle.rating.toFixed(1)} ({propiedadDetalle.ratingCount} reseñas)
+                </p>
+              ) : (
+                <p className="mt-rating-empty">Sin calificaciones aún</p>
+              )}
+              <div className="property-image-carousel">
+                {propiedadDetalle.imagenes.length > 0 && !imagenDetalleError ? (
+                  <img
+                    className="property-detail-image"
+                    src={propiedadDetalle.imagenes[indiceImagen]}
+                    alt={`${propiedadDetalle.titulo}, imagen ${indiceImagen + 1}`}
+                    onError={() => setImagenDetalleError(true)}
+                  />
+                ) : (
+                  <div className="property-detail-image-fallback" role="img" aria-label="Imagen no disponible">
+                    <svg viewBox="0 0 64 64" aria-hidden="true">
+                      <rect x="8" y="12" width="48" height="40" rx="5" />
+                      <circle cx="23" cy="27" r="5" />
+                      <path d="m12 47 15-14 9 8 6-6 10 12" />
+                    </svg>
+                    <span>Imagen no disponible</span>
+                  </div>
+                )}
+                {propiedadDetalle.imagenes.length > 1 && (
+                  <>
+                    <button
+                      type="button"
+                      className="property-carousel-arrow property-carousel-prev"
+                      onClick={() =>
+                        setIndiceImagen(
+                          (indiceImagen - 1 + propiedadDetalle.imagenes.length) %
+                            propiedadDetalle.imagenes.length
+                        )
+                      }
+                      aria-label="Ver imagen anterior"
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="m15 18-6-6 6-6" />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      className="property-carousel-arrow property-carousel-next"
+                      onClick={() =>
+                        setIndiceImagen((indiceImagen + 1) % propiedadDetalle.imagenes.length)
+                      }
+                      aria-label="Ver imagen siguiente"
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="m9 18 6-6-6-6" />
+                      </svg>
+                    </button>
+                  </>
+                )}
+                <span className="property-carousel-counter" aria-live="polite">
+                  {propiedadDetalle.imagenes.length
+                    ? `${indiceImagen + 1} / ${propiedadDetalle.imagenes.length}`
+                    : "1 / 1"}
+                </span>
+              </div>
             </div>
           </div>
         </div>
