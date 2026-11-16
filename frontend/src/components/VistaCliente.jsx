@@ -1,7 +1,5 @@
-﻿import React, { useEffect, useMemo, useState } from "react";
-import { MOCK_RESERVATIONS } from "../mockData.js";
-
-const API = "";
+import React, { useEffect, useMemo, useState } from "react";
+import { api } from "../api.js";
 
 // Genera la grilla de un mes: de lunes a domingo
 function grillaMes(anio, mes) {
@@ -19,6 +17,12 @@ const MESES = [
   "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
   "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
 ];
+const fechaLocalParaInput = () => {
+  const hoy = new Date();
+  const mes = String(hoy.getMonth() + 1).padStart(2, "0");
+  const dia = String(hoy.getDate()).padStart(2, "0");
+  return `${hoy.getFullYear()}-${mes}-${dia}`;
+};
 
 function Calendario({ reservas = [] }) {
   const hoy = new Date();
@@ -35,8 +39,8 @@ function Calendario({ reservas = [] }) {
       const ini = new Date(r.checkIn);
       const fin = new Date(r.checkOut);
       if (Number.isNaN(ini.getTime()) || Number.isNaN(fin.getTime())) continue;
-      for (let d = new Date(ini); d <= fin; d.setDate(d.getDate() + 1)) {
-        set.add(`${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`);
+      for (let d = new Date(ini); d < fin; d.setUTCDate(d.getUTCDate() + 1)) {
+        set.add(`${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`);
       }
     }
     return set;
@@ -53,11 +57,27 @@ function Calendario({ reservas = [] }) {
   return (
     <div className="calendario">
       <div className="cal-header">
-        <button onClick={() => avanzar(-1)}>â€¹</button>
+        <button
+          type="button"
+          onClick={() => avanzar(-1)}
+          aria-label="Mes anterior"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m15 18-6-6 6-6" />
+          </svg>
+        </button>
         <strong>
           {MESES[mes]} {anio}
         </strong>
-        <button onClick={() => avanzar(1)}>â€º</button>
+        <button
+          type="button"
+          onClick={() => avanzar(1)}
+          aria-label="Mes siguiente"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m9 18 6-6-6-6" />
+          </svg>
+        </button>
       </div>
       <div className="cal-grid">
         {["L", "M", "M", "J", "V", "S", "D"].map((d, i) => (
@@ -90,7 +110,8 @@ function Calendario({ reservas = [] }) {
   );
 }
 
-export default function VistaCliente({ usuario, propiedades }) {
+export default function VistaCliente({ usuario }) {
+  const [propiedades, setPropiedades] = useState([]);
   const [seleccionada, setSeleccionada] = useState("");
   const [reservas, setReservas] = useState([]);
   const [mensaje, setMensaje] = useState("");
@@ -100,96 +121,80 @@ export default function VistaCliente({ usuario, propiedades }) {
   const [misReservas, setMisReservas] = useState([]);
   const [cancelandoId, setCancelandoId] = useState(null);
   const [confirmarId, setConfirmarId] = useState(null);
+  const [cargando, setCargando] = useState(true);
 
-  const cargarReservas = (id) => {
-    if (!id) return;
-    const propertyReservations = MOCK_RESERVATIONS.filter(
-      (r) => String(r.propiedadId) === String(id) && r.estado !== "cancelada"
-    );
-    setReservas(propertyReservations);
-  };
-
-  const cargarMisReservas = () => {
-    if (!usuario?.id) return;
-    const mine = MOCK_RESERVATIONS.filter((r) => String(r.turista?._id) === String(usuario.id));
+  const cargarMisReservas = async () => {
+    const mine = await api("/api/reservas/mis");
     setMisReservas(mine);
   };
 
-  const cancelarReserva = (id) => {
-    setCancelandoId(id);
-    const index = MOCK_RESERVATIONS.findIndex((r) => String(r.id || r._id) === String(id));
-    if (index >= 0) MOCK_RESERVATIONS[index].estado = "cancelada";
-    setMisReservas((prev) =>
-      prev.map((r) => (String(r.id || r._id) === String(id) ? { ...r, estado: "cancelada" } : r))
-    );
-    setReservas((prev) => prev.filter((r) => String(r.id || r._id) !== String(id)));
-    setMensaje("Reserva cancelada correctamente");
-    setCancelandoId(null);
-    setConfirmarId(null);
-  };
+  useEffect(() => {
+    let active = true;
+    Promise.all([api("/api/propiedades"), api("/api/reservas/mis")])
+      .then(([properties, mine]) => {
+        if (!active) return;
+        setPropiedades(properties);
+        setMisReservas(mine);
+        setSeleccionada(properties[0]?._id || "");
+      })
+      .catch((requestError) => {
+        if (active) setError(requestError.message || "No se pudieron cargar los datos");
+      })
+      .finally(() => {
+        if (active) setCargando(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
-    cargarReservas(seleccionada);
-  }, [seleccionada]);
-
-  useEffect(() => {
-    cargarMisReservas();
-  }, [usuario?.id]);
-
-  // Si cambia la lista de propiedades (ej: al loguear) ajusto la seleccion
-  useEffect(() => {
-    const lista = Array.isArray(propiedades) ? propiedades : [];
-    if (lista.length && !lista.some((p) => p._id === seleccionada)) {
-      setSeleccionada(lista[0]._id);
+    if (!seleccionada) {
+      setReservas([]);
+      return;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [propiedades]);
+    let active = true;
+    api(`/api/propiedades/${seleccionada}/reservas`)
+      .then((items) => {
+        if (active) {
+          setReservas(items);
+          setError("");
+        }
+      })
+      .catch((requestError) => {
+        if (active) setError(requestError.message || "No se pudo consultar la disponibilidad");
+      });
+    return () => {
+      active = false;
+    };
+  }, [seleccionada]);
 
   const handleChange = (e) =>
     setForm({ ...form, [e.target.name]: e.target.value });
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setMensaje("");
     setError("");
-
-    if (!usuario?.id || !seleccionada) {
-      setError("Faltan datos para crear la reserva");
-      return;
+    try {
+      const result = await api("/api/reservas", {
+        method: "POST",
+        body: JSON.stringify({
+          propiedadId: seleccionada,
+          checkIn: form.desde,
+          checkOut: form.hasta,
+          metodoPago: form.metodoPago,
+        }),
+      });
+      setForm({ desde: "", hasta: "", metodoPago: "efectivo" });
+      setMensaje(result.mensaje);
+      await Promise.all([
+        cargarMisReservas(),
+        api(`/api/propiedades/${seleccionada}/reservas`).then(setReservas),
+      ]);
+    } catch (requestError) {
+      setError(requestError.message || "No se pudo registrar la reserva");
     }
-
-    const propiedad = listaPropiedades.find((p) => p._id === seleccionada);
-    if (!propiedad) {
-      setError("Propiedad no encontrada");
-      return;
-    }
-
-    const noches = Math.max(
-      1,
-      Math.round((new Date(form.hasta) - new Date(form.desde)) / 86400000)
-    );
-    const nuevaReserva = {
-      id: `r-${Date.now()}`,
-      _id: `r-${Date.now()}`,
-      propiedadId: seleccionada,
-      propiedadTitulo: propiedad.titulo,
-      turista: {
-        _id: usuario.id,
-        nombre: usuario.nombre,
-        apellido: usuario.apellido,
-        telefono: usuario.telefono,
-      },
-      checkIn: form.desde,
-      checkOut: form.hasta,
-      montoTotal: noches * (propiedad.precioPorNoche || 0),
-      estado: "confirmada",
-    };
-
-    MOCK_RESERVATIONS.push(nuevaReserva);
-    setReservas((prev) => [...prev, nuevaReserva]);
-    setMisReservas((prev) => [...prev, nuevaReserva]);
-    setForm({ desde: "", hasta: "", metodoPago: "efectivo" });
-    setMensaje("Reserva registrada correctamente");
   };
 
   const listaPropiedades = Array.isArray(propiedades) ? propiedades : [];
@@ -197,13 +202,31 @@ export default function VistaCliente({ usuario, propiedades }) {
 
   const propiedad = listaPropiedades.find((p) => p._id === seleccionada);
 
-  console.log("=== DIAGNÓSTICO CLINE (VistaCliente) ===", { usuario, propiedades, reservas, misReservas });
+  const cancelarReserva = async (id) => {
+    setCancelandoId(id);
+    setError("");
+    try {
+      const result = await api(`/api/reservas/${id}/cancelar`, { method: "PUT" });
+      await Promise.all([
+        cargarMisReservas(),
+        api(`/api/propiedades/${seleccionada}/reservas`).then(setReservas),
+      ]);
+      setMensaje(result.mensaje);
+      setConfirmarId(null);
+    } catch (requestError) {
+      setError(requestError.message || "No se pudo cancelar la reserva");
+    } finally {
+      setCancelandoId(null);
+    }
+  };
   return (
     <section className="cliente">
       <h2>Propiedades disponibles</h2>
       <p className="nota">
         Hola {usuario?.nombre}. Elegi una propiedad para ver disponibilidad y reservar.
       </p>
+      {cargando && <p className="nota">Cargando propiedades y reservas...</p>}
+      {error && <p className="error">{error}</p>}
 
       <div className="propiedades-grid">
         {listaPropiedades.map((p) => (
@@ -247,6 +270,7 @@ export default function VistaCliente({ usuario, propiedades }) {
                 <input
                   type="date"
                   name="desde"
+                  min={fechaLocalParaInput()}
                   value={form.desde}
                   onChange={handleChange}
                   required
@@ -257,6 +281,7 @@ export default function VistaCliente({ usuario, propiedades }) {
                 <input
                   type="date"
                   name="hasta"
+                  min={form.desde || fechaLocalParaInput()}
                   value={form.hasta}
                   onChange={handleChange}
                   required
@@ -273,11 +298,11 @@ export default function VistaCliente({ usuario, propiedades }) {
                 <option value="transferencia_bancaria">Transferencia bancaria</option>
                 <option value="billetera_virtual">Billetera virtual</option>
               </select>
-              <button className="btn-primary">Reservar</button>
+              <button className="btn-primary" disabled={cargando}>Solicitar reserva</button>
             </form>
+            <p className="nota">En esta etapa de prueba el pago queda pendiente; no se realiza ningun cobro.</p>
             </div>
             {mensaje && <p className="ok">{mensaje}</p>}
-            {error && <p className="error">{error}</p>}
           </div>
           <Calendario reservas={reservas} />
         </div>
@@ -327,4 +352,3 @@ export default function VistaCliente({ usuario, propiedades }) {
     </section>
   );
 }
-

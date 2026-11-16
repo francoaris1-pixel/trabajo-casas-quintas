@@ -1,7 +1,11 @@
 import "dotenv/config";
-import { pathToFileURL } from "node:url";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, promises as fs } from "node:fs";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import cors from "cors";
 import express from "express";
+import multer from "multer";
 import mongoose from "mongoose";
 import {
   authenticate,
@@ -23,9 +27,49 @@ import { ensureTestData } from "./seed-data.js";
 import { enviarMail, mailBienvenida, mailReserva } from "./mailer.js";
 
 const app = express();
+const uploadsDirectory = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "uploads"
+);
+mkdirSync(uploadsDirectory, { recursive: true });
+
+const imageTypes = new Map([
+  ["image/jpeg", ".jpg"],
+  ["image/png", ".png"],
+  ["image/webp", ".webp"],
+  ["image/gif", ".gif"],
+]);
+const imageUpload = multer({
+  storage: multer.diskStorage({
+    destination: uploadsDirectory,
+    filename: (_req, file, callback) => {
+      callback(null, `${randomUUID()}${imageTypes.get(file.mimetype)}`);
+    },
+  }),
+  limits: { fileSize: 5 * 1024 * 1024, files: 10 },
+  fileFilter: (_req, file, callback) => {
+    if (!imageTypes.has(file.mimetype)) {
+      const error = new Error("Formato de imagen no permitido");
+      error.code = "INVALID_IMAGE_TYPE";
+      callback(error);
+      return;
+    }
+    callback(null, true);
+  },
+});
 const asyncRoute = (handler) => (req, res, next) =>
-  Promise.resolve(handler(req, res, next)).catch(next);
+  Promise.resolve(handler(req, res, next)).catch(async (error) => {
+    if (Array.isArray(req.files) && req.files.length) {
+      await removeUploadedFiles(req.files).catch((cleanupError) => {
+        console.error("No se pudieron limpiar imágenes de una solicitud fallida:", cleanupError);
+      });
+    }
+    next(error);
+  });
 const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const normalizePhone = (value) =>
+  typeof value === "string" ? value.trim().replace(/[^\d+]/g, "") : "";
+const validPhone = /^\+?\d{7,15}$/;
 const paymentMethods = new Set([
   "efectivo",
   "tarjeta_debito",
@@ -53,6 +97,84 @@ const todayInGoya = () => {
   );
   return `${parts.year}-${parts.month}-${parts.day}`;
 };
+const uploadedFiles = (req) => (Array.isArray(req.files) ? req.files : []);
+const removeUploadedFiles = async (files) => {
+  await Promise.all(
+    files.map((file) =>
+      fs.unlink(file.path).catch((error) => {
+        if (error.code !== "ENOENT") throw error;
+      })
+    )
+  );
+};
+const isValidImageContent = async (file) => {
+  const handle = await fs.open(file.path, "r");
+  try {
+    const header = Buffer.alloc(12);
+    const { bytesRead } = await handle.read(header, 0, header.length, 0);
+    if (file.mimetype === "image/jpeg") {
+      return bytesRead >= 3 && header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff;
+    }
+    if (file.mimetype === "image/png") {
+      return header.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    }
+    if (file.mimetype === "image/gif") {
+      const signature = header.subarray(0, 6).toString("ascii");
+      return signature === "GIF87a" || signature === "GIF89a";
+    }
+    return (
+      file.mimetype === "image/webp" &&
+      header.subarray(0, 4).toString("ascii") === "RIFF" &&
+      header.subarray(8, 12).toString("ascii") === "WEBP"
+    );
+  } finally {
+    await handle.close();
+  }
+};
+const addPropertyPhotos = async (properties) => {
+  if (!properties.length) return properties;
+  const photos = await Foto.find({
+    propiedad: { $in: properties.map((property) => property._id) },
+  })
+    .sort({ _id: -1 })
+    .lean();
+  const photosByProperty = new Map();
+  photos.forEach((photo) => {
+    const key = String(photo.propiedad);
+    const propertyPhotos = photosByProperty.get(key) || [];
+    propertyPhotos.push(photo);
+    photosByProperty.set(key, propertyPhotos);
+  });
+  return properties.map((property) => {
+    const propertyPhotos = photosByProperty.get(String(property._id)) || [];
+    return {
+      ...property,
+      fotos: propertyPhotos,
+      foto: propertyPhotos[0]?.archivo || null,
+    };
+  });
+};
+const removeStoredPhotoFiles = async (photos) => {
+  await Promise.all(
+    photos.map(async (photo) => {
+      if (typeof photo.archivo !== "string" || !photo.archivo.startsWith("/uploads/")) {
+        return;
+      }
+      const uploadName = photo.archivo.slice("/uploads/".length);
+      const filename = path.basename(uploadName);
+      if (filename !== uploadName) return;
+      const filePath = path.join(uploadsDirectory, filename);
+      try {
+        if (await Foto.exists({ archivo: photo.archivo })) return;
+        await fs.unlink(filePath);
+      } catch (error) {
+        if (error.code !== "ENOENT") {
+          console.error("No se pudo eliminar una imagen reemplazada:", error);
+        }
+      }
+    })
+  );
+};
 
 app.use(
   cors({
@@ -61,6 +183,7 @@ app.use(
       (process.env.NODE_ENV === "production" ? false : true),
   })
 );
+app.use("/uploads", express.static(uploadsDirectory, { maxAge: "1d", immutable: true }));
 app.use(express.json({ limit: "1mb" }));
 
 let databaseReady;
@@ -109,13 +232,24 @@ app.get(
 app.post(
   "/api/login",
   asyncRoute(async (req, res) => {
-    const correo = String(req.body.correo || "").trim().toLowerCase();
-    const contrasena = String(req.body.contrasena || "");
-    if (!validEmail.test(correo) || !contrasena) {
-      return res.status(400).json({ error: "Correo y contrasena son obligatorios" });
+    const body = req.body && typeof req.body === "object" ? req.body : {};
+    const identificador = typeof body.identificador === "string"
+      ? body.identificador.trim()
+      : typeof body.correo === "string"
+      ? body.correo.trim()
+      : "";
+    const contrasena = typeof body.contrasena === "string" ? body.contrasena : "";
+    if (!identificador || !contrasena) {
+      return res.status(400).json({ error: "El correo o teléfono y la contraseña son obligatorios" });
     }
 
-    const user = await Usuario.findOne({ correo }).select("+contrasena");
+    const query = validEmail.test(identificador)
+      ? { correo: identificador.toLowerCase() }
+      : { telefono: normalizePhone(identificador) };
+    if ("telefono" in query && !validPhone.test(query.telefono)) {
+      return res.status(400).json({ error: "Ingresa un correo electrónico o teléfono válido" });
+    }
+    const user = await Usuario.findOne(query).select("+contrasena");
     if (!user || !(await verifyPassword(contrasena, user.contrasena))) {
       return res.status(401).json({ error: "Correo o contrasena incorrectos" });
     }
@@ -130,26 +264,36 @@ app.post(
 app.post(
   "/api/registro",
   asyncRoute(async (req, res) => {
-    const nombre = String(req.body.nombre || "").trim();
-    const apellido = String(req.body.apellido || "").trim();
-    const correo = String(req.body.correo || "").trim().toLowerCase();
-    const contrasena = String(req.body.contrasena || "");
-    const telefono = String(req.body.telefono || "").trim();
-    if (!nombre || !validEmail.test(correo) || contrasena.length < 8) {
+    const body = req.body && typeof req.body === "object" ? req.body : {};
+    const nombre = typeof body.nombre === "string" ? body.nombre.trim() : "";
+    const apellido = typeof body.apellido === "string" ? body.apellido.trim() : "";
+    const correo = typeof body.correo === "string" ? body.correo.trim().toLowerCase() : "";
+    const telefono = normalizePhone(body.telefono);
+    const contrasena = typeof body.contrasena === "string" ? body.contrasena : "";
+    if (!nombre || (correo && !validEmail.test(correo)) || contrasena.length < 8) {
       return res.status(400).json({
-        error: "Ingresa nombre, correo valido y contrasena de al menos 8 caracteres",
+        error: "Ingresa un nombre, un correo válido y una contraseña de al menos 8 caracteres",
       });
     }
-    if (await Usuario.exists({ correo })) {
-      return res.status(409).json({ error: "Ese correo ya esta registrado" });
+    if (telefono && !validPhone.test(telefono)) {
+      return res.status(400).json({ error: "Ingresa un teléfono válido" });
+    }
+    if (!correo && !telefono) {
+      return res.status(400).json({ error: "Indica un correo electrónico o teléfono para iniciar sesión" });
+    }
+    if (correo && await Usuario.exists({ correo })) {
+      return res.status(409).json({ error: "Ese correo ya está registrado" });
+    }
+    if (telefono && await Usuario.exists({ telefono })) {
+      return res.status(409).json({ error: "Ese teléfono ya está registrado" });
     }
 
     const user = await Usuario.create({
       nombre,
       apellido,
-      correo,
+      ...(correo ? { correo } : {}),
       contrasena: await hashPassword(contrasena),
-      telefono,
+      ...(telefono ? { telefono } : {}),
       rol: "inquilino",
     });
     res.status(201).json({
@@ -157,10 +301,12 @@ app.post(
       usuario: publicUser(user),
       token: createToken(user._id),
     });
-    const mail = mailBienvenida(user);
-    void enviarMail(mail.para, mail.asunto, mail.html).catch((error) =>
-      console.error("No se pudo enviar el mail de bienvenida:", error.message)
-    );
+    if (user.correo) {
+      const mail = mailBienvenida(user);
+      void enviarMail(mail.para, mail.asunto, mail.html).catch((error) =>
+        console.error("No se pudo enviar el mail de bienvenida:", error.message)
+      );
+    }
   })
 );
 
@@ -179,14 +325,7 @@ app.get(
       .populate("propietario", "nombre apellido")
       .sort({ _id: -1 })
       .lean();
-    const withPhotos = await Promise.all(
-      properties.map(async (property) => {
-        const photo = await Foto.findOne({ propiedad: property._id })
-          .sort({ _id: -1 })
-          .lean();
-        return { ...property, foto: photo?.archivo || null };
-      })
-    );
+    const withPhotos = await addPropertyPhotos(properties);
     res.json(withPhotos);
   })
 );
@@ -309,15 +448,17 @@ app.post(
         estado: payment.estado,
       },
     });
-    const mail = mailReserva({
-      usuario: req.user,
-      propiedad: property,
-      reserva: reservation,
-      metodoPago,
-    });
-    void enviarMail(mail.para, mail.asunto, mail.html).catch((error) =>
-      console.error("No se pudo enviar el mail de reserva:", error.message)
-    );
+    if (req.user.correo) {
+      const mail = mailReserva({
+        usuario: req.user,
+        propiedad: property,
+        reserva: reservation,
+        metodoPago,
+      });
+      void enviarMail(mail.para, mail.asunto, mail.html).catch((error) =>
+        console.error("No se pudo enviar el mail de reserva:", error.message)
+      );
+    }
   })
 );
 
@@ -509,10 +650,10 @@ app.delete(
     if (await Reserva.exists({ propiedad: property._id, estado: { $ne: "cancelada" } })) {
       return res.status(409).json({ error: "No se puede eliminar una propiedad con reservas activas" });
     }
-    await Promise.all([
-      Foto.deleteMany({ propiedad: property._id }),
-      property.deleteOne(),
-    ]);
+    const photos = await Foto.find({ propiedad: property._id }).lean();
+    await Foto.deleteMany({ propiedad: property._id });
+    await property.deleteOne();
+    await removeStoredPhotoFiles(photos);
     res.json({ mensaje: "Propiedad eliminada" });
   })
 );
@@ -533,12 +674,7 @@ app.get(
         .sort({ fechaCreacion: -1 })
         .lean(),
     ]);
-    const withPhotos = await Promise.all(
-      properties.map(async (property) => {
-        const photo = await Foto.findOne({ propiedad: property._id }).lean();
-        return { ...property, foto: photo?.archivo || null };
-      })
-    );
+    const withPhotos = await addPropertyPhotos(properties);
     res.json({ propiedades: withPhotos, reservas: reservations });
   })
 );
@@ -568,39 +704,131 @@ app.put(
   "/api/admin/propiedades/:id",
   authenticate,
   requireRole("admin"),
+  imageUpload.array("images", 10),
   asyncRoute(async (req, res) => {
+    const files = uploadedFiles(req);
+    const rejectRequest = async (message) => {
+      await removeUploadedFiles(files);
+      return res.status(400).json({ error: message });
+    };
+
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-      return res.status(400).json({ error: "ID de propiedad invalido" });
+      return rejectRequest("ID de propiedad invalido");
     }
     const property = await Propiedad.findById(req.params.id);
-    if (!property) return res.status(404).json({ error: "Propiedad no encontrada" });
+    if (!property) {
+      await removeUploadedFiles(files);
+      return res.status(404).json({ error: "Propiedad no encontrada" });
+    }
+
+    for (const file of files) {
+      if (!(await isValidImageContent(file))) {
+        return rejectRequest("El contenido de uno de los archivos no es una imagen valida");
+      }
+    }
+
+    let keepPhotoIds;
+    if (req.body.keepPhotoIds !== undefined) {
+      try {
+        keepPhotoIds =
+          typeof req.body.keepPhotoIds === "string"
+            ? JSON.parse(req.body.keepPhotoIds)
+            : req.body.keepPhotoIds;
+      } catch {
+        return rejectRequest("La lista de imagenes actuales no es valida");
+      }
+      if (
+        !Array.isArray(keepPhotoIds) ||
+        keepPhotoIds.some((id) => !mongoose.Types.ObjectId.isValid(id))
+      ) {
+        return rejectRequest("La lista de imagenes actuales no es valida");
+      }
+      keepPhotoIds = [...new Set(keepPhotoIds.map(String))];
+    }
+
+    const existingPhotos = await Foto.find({ propiedad: property._id }).lean();
+    const existingPhotoIds = new Set(existingPhotos.map((photo) => String(photo._id)));
+    if (keepPhotoIds?.some((id) => !existingPhotoIds.has(id))) {
+      return rejectRequest("Una o mas imagenes no pertenecen a esta propiedad");
+    }
+    const photosToKeep =
+      keepPhotoIds === undefined
+        ? existingPhotos
+        : existingPhotos.filter((photo) => keepPhotoIds.includes(String(photo._id)));
+    const photosToRemove = existingPhotos.filter(
+      (photo) => !photosToKeep.some((keptPhoto) => String(keptPhoto._id) === String(photo._id))
+    );
+    if (photosToKeep.length + files.length > 10) {
+      return rejectRequest("Una propiedad puede tener un maximo de 10 imagenes");
+    }
+
     const { titulo, descripcion, direccion, maxHuespedes, precioPorNoche, estado } =
       req.body;
-    if (titulo !== undefined) property.titulo = String(titulo).trim();
-    if (descripcion !== undefined) property.descripcion = String(descripcion).trim();
-    if (direccion !== undefined) property.direccion = String(direccion).trim();
-    if (maxHuespedes !== undefined) {
-      const guests = Number(maxHuespedes);
-      if (!Number.isInteger(guests) || guests < 1) {
-        return res.status(400).json({ error: "Cantidad de huespedes invalida" });
-      }
-      property.maxHuespedes = guests;
+    const normalizedTitle = titulo === undefined ? undefined : String(titulo).trim();
+    if (normalizedTitle !== undefined && !normalizedTitle) {
+      return rejectRequest("El titulo de la propiedad es obligatorio");
     }
-    if (precioPorNoche !== undefined) {
-      const price = Number(precioPorNoche);
-      if (!Number.isFinite(price) || price < 0) {
-        return res.status(400).json({ error: "Precio invalido" });
+    let guests;
+    if (maxHuespedes !== undefined) {
+      guests = Number(maxHuespedes);
+      if (!Number.isInteger(guests) || guests < 1) {
+        return rejectRequest("Cantidad de huespedes invalida");
       }
-      property.precioPorNoche = price;
+    }
+    let price;
+    if (precioPorNoche !== undefined) {
+      price = Number(precioPorNoche);
+      if (!Number.isFinite(price) || price < 0) {
+        return rejectRequest("Precio invalido");
+      }
     }
     if (estado !== undefined) {
       if (!["pending_review", "disponible", "suspendida"].includes(estado)) {
-        return res.status(400).json({ error: "Estado de propiedad invalido" });
+        return rejectRequest("Estado de propiedad invalido");
       }
-      property.estado = estado;
     }
-    await property.save();
-    res.json({ mensaje: "Propiedad actualizada", propiedad: property });
+
+    let addedPhotos = [];
+    try {
+      if (files.length) {
+        addedPhotos = await Foto.insertMany(
+          files.map((file) => ({
+            propiedad: property._id,
+            archivo: `/uploads/${file.filename}`,
+            descripcion: "",
+          }))
+        );
+      }
+      if (normalizedTitle !== undefined) property.titulo = normalizedTitle;
+      if (descripcion !== undefined) property.descripcion = String(descripcion).trim();
+      if (direccion !== undefined) property.direccion = String(direccion).trim();
+      if (guests !== undefined) property.maxHuespedes = guests;
+      if (price !== undefined) property.precioPorNoche = price;
+      if (estado !== undefined) property.estado = estado;
+      await property.save();
+      if (photosToRemove.length) {
+        await Foto.deleteMany({
+          propiedad: property._id,
+          _id: { $in: photosToRemove.map((photo) => photo._id) },
+        });
+      }
+    } catch (error) {
+      if (addedPhotos.length) {
+        await Foto.deleteMany({ _id: { $in: addedPhotos.map((photo) => photo._id) } });
+      }
+      await removeUploadedFiles(files);
+      throw error;
+    }
+
+    await removeStoredPhotoFiles(photosToRemove);
+    res.json({
+      mensaje: "Propiedad actualizada",
+      propiedad: {
+        ...property.toObject(),
+        fotos: [...photosToKeep, ...addedPhotos],
+        foto: addedPhotos[0]?.archivo || photosToKeep[0]?.archivo || null,
+      },
+    });
   })
 );
 
@@ -617,16 +845,36 @@ app.delete(
     if (await Reserva.exists({ propiedad: property._id, estado: { $ne: "cancelada" } })) {
       return res.status(409).json({ error: "No se puede eliminar una propiedad con reservas activas" });
     }
-    await Promise.all([
-      Foto.deleteMany({ propiedad: property._id }),
-      property.deleteOne(),
-    ]);
+    const photos = await Foto.find({ propiedad: property._id }).lean();
+    await Foto.deleteMany({ propiedad: property._id });
+    await property.deleteOne();
+    await removeStoredPhotoFiles(photos);
     res.json({ mensaje: "Propiedad eliminada" });
   })
 );
 
 app.use((error, _req, res, _next) => {
   console.error("Error en el API:", error);
+  if (
+    error?.name === "MongooseServerSelectionError" ||
+    error?.name === "MongoNetworkError" ||
+    error?.name === "MongoNetworkTimeoutError"
+  ) {
+    return res.status(503).json({
+      error: "La base de datos no esta disponible. Intenta nuevamente en unos momentos.",
+    });
+  }
+  if (error instanceof multer.MulterError) {
+    const status = error.code === "LIMIT_FILE_SIZE" ? 413 : 400;
+    const message =
+      error.code === "LIMIT_FILE_SIZE"
+        ? "Cada imagen debe pesar 5 MB o menos"
+        : "La solicitud puede incluir hasta 10 imagenes";
+    return res.status(status).json({ error: message });
+  }
+  if (error?.code === "INVALID_IMAGE_TYPE") {
+    return res.status(400).json({ error: error.message });
+  }
   if (error?.type === "entity.parse.failed") {
     return res.status(400).json({ error: "El cuerpo de la solicitud no es JSON valido" });
   }

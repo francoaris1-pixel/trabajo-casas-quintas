@@ -1,4 +1,5 @@
 ﻿import React, { useState } from "react";
+import { api } from "../api.js";
 
 export default function Reservas({ usuario, propiedades }) {
   const listaPropiedades = Array.isArray(propiedades) ? propiedades : [];
@@ -21,15 +22,13 @@ export default function Reservas({ usuario, propiedades }) {
     setMensaje("");
 
     try {
-      const res = await fetch("/api/reservas", {
+      const datos = await api("/api/reservas", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(form),
       });
-      const datos = await res.json();
-      setMensaje(res.ok ? datos.mensaje : datos.error);
-    } catch {
-      setMensaje("No se pudo conectar con el servidor");
+      setMensaje(datos.mensaje);
+    } catch (requestError) {
+      setMensaje(requestError.message || "No se pudo conectar con el servidor");
     }
   };
 
@@ -98,4 +97,3 @@ export default function Reservas({ usuario, propiedades }) {
     </section>
   );
 }
-

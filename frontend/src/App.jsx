@@ -1,11 +1,17 @@
-﻿import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import Home from "./components/Home.jsx";
 import Login from "./components/Login.jsx";
 import Registro from "./components/Registro.jsx";
 import VistaCliente from "./components/VistaCliente.jsx";
 import PanelPropietario from "./components/PanelPropietario.jsx";
 import Admin from "./components/Admin.jsx";
-import { MOCK_PROPERTIES } from "./mockData.js";
+import {
+  api,
+  clearAuthToken,
+  clearLegacyAuthData,
+  getAuthToken,
+  setAuthToken,
+} from "./api.js";
 
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -21,7 +27,7 @@ class ErrorBoundary extends React.Component {
   render() {
     if (this.state.hasError) {
       return (
-        <div style={{ padding: "40px", background: "#f3f0f7", height: "100vh" }}>
+        <div className="loading-state">
           <h2>Error en el panel</h2>
           <pre>{this.state.error?.message}</pre>
         </div>
@@ -33,56 +39,58 @@ class ErrorBoundary extends React.Component {
 export default function App() {
   // vista: "home" | "login" | "registro" | "panel"
   // El contenido del "panel" depende del rol del usuario
-  const [vista, setVista] = useState(() => {
+  const [vista, setVista] = useState("home");
+  const [usuario, setUsuario] = useState(null);
+  const [authChecking, setAuthChecking] = useState(true);
+  const [temaOscuro, setTemaOscuro] = useState(() => {
     try {
-      return localStorage.getItem("user") ? "panel" : "home";
+      return localStorage.getItem("theme") === "dark";
     } catch {
-      return "home";
+      return false;
     }
   });
-  const [usuario, setUsuario] = useState(() => {
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = temaOscuro ? "dark" : "light";
     try {
-      const saved = localStorage.getItem("user");
-      return saved ? JSON.parse(saved) : null;
+      localStorage.setItem("theme", temaOscuro ? "dark" : "light");
     } catch {
-      return null;
+      // El tema sigue funcionando aunque el navegador no permita persistirlo.
     }
-  });
-  const [propiedades, setPropiedades] = useState([]);
+  }, [temaOscuro]);
+
+  useEffect(() => {
+    clearLegacyAuthData();
+    if (!getAuthToken()) {
+      setAuthChecking(false);
+      return;
+    }
+    api("/api/auth/me")
+      .then(({ usuario: restoredUser }) => {
+        setUsuario(restoredUser);
+        setVista("panel");
+      })
+      .catch(() => clearAuthToken())
+      .finally(() => setAuthChecking(false));
+  }, []);
 
   const handleLogin = async (datos) => {
     const usuarioLogueado = datos.usuario || datos;
+    setAuthToken(datos.token);
     setUsuario(usuarioLogueado);
     setVista("panel");
-    try {
-      localStorage.setItem("user", JSON.stringify(usuarioLogueado));
-    } catch {
-      // ignore
-    }
-
-    const props = MOCK_PROPERTIES;
-    setPropiedades(
-      usuarioLogueado?.rol === "inquilino"
-        ? props
-        : props.filter((p) => p.propietario?._id === usuarioLogueado?.id)
-    );
   };
 
   const handleLogout = () => {
+    clearAuthToken();
     setUsuario(null);
-    setPropiedades([]);
     setVista("home");
-    try {
-      localStorage.removeItem("user");
-    } catch {
-      // ignore
-    }
   };
 
   const panelPorRol = () => {
     if (!usuario || !usuario.rol) {
       return (
-        <div style={{ padding: "40px", background: "#f3f0f7", height: "100vh" }}>
+        <div className="loading-state">
           Cargando panel de GoyaQuintas...
         </div>
       );
@@ -90,7 +98,7 @@ export default function App() {
     if (usuario.rol === "inquilino")
       return (
         <ErrorBoundary>
-          <VistaCliente usuario={usuario} propiedades={propiedades} />
+          <VistaCliente usuario={usuario} />
         </ErrorBoundary>
       );
     if (usuario.rol === "admin")
@@ -98,7 +106,7 @@ export default function App() {
     if (usuario.rol === "anfitrion")
       return <PanelPropietario usuario={usuario} />;
     return (
-      <div style={{ padding: "40px", background: "#f3f0f7", height: "100vh" }}>
+      <div className="loading-state">
         Cargando panel de GoyaQuintas...
       </div>
     );
@@ -108,9 +116,28 @@ export default function App() {
     <div className="app">
       <nav className="navbar">
         <span className="logo" onClick={() => setVista("home")}>
+          <img src="/images/goya-recibe-logo.png" alt="" aria-hidden="true" />
           Goya Recibe
         </span>
-        <div>
+        <div className="navbar-actions">
+          <button
+            className="theme-toggle"
+            type="button"
+            onClick={() => setTemaOscuro((actual) => !actual)}
+            aria-label={`Cambiar a modo ${temaOscuro ? "claro" : "oscuro"}`}
+            title={`Cambiar a modo ${temaOscuro ? "claro" : "oscuro"}`}
+          >
+            {temaOscuro ? (
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="12" cy="12" r="4" />
+                <path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M20.9 13A9 9 0 0 1 11 3.1 9 9 0 1 0 20.9 13Z" />
+              </svg>
+            )}
+          </button>
           <button onClick={() => setVista("home")}>Home</button>
           {usuario ? (
             <>
@@ -135,14 +162,27 @@ export default function App() {
         </div>
       </nav>
 
-      {vista === "home" && <Home irALogin={() => setVista("login")} usuario={usuario} />}
-      {vista === "login" && <Login onLogin={handleLogin} />}
-      {vista === "registro" && (
-        <Registro onRegistro={handleLogin} irALogin={() => setVista("login")} />
+      {authChecking ? (
+        <p className="nota">Verificando sesión...</p>
+      ) : (
+        <>
+          {vista === "home" && (
+            <Home
+              irALogin={() => setVista("login")}
+              usuario={usuario}
+            />
+          )}
+          {vista === "login" && <Login onLogin={handleLogin} />}
+          {vista === "registro" && (
+            <Registro onRegistro={handleLogin} irALogin={() => setVista("login")} />
+          )}
+          {vista === "panel" && panelPorRol()}
+        </>
       )}
-      {vista === "panel" && panelPorRol()}
+      <footer className="site-footer">
+        <p>&copy; 2026 Goya Recibe. Todos los derechos reservados.</p>
+        <p>Goya, Corrientes - Argentina</p>
+      </footer>
     </div>
   );
 }
-
-

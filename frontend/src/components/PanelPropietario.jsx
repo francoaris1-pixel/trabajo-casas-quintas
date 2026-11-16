@@ -1,5 +1,5 @@
 ﻿import React, { useEffect, useState } from "react";
-import { MOCK_PROPERTIES, MOCK_RESERVATIONS } from "../mockData.js";
+import { api } from "../api.js";
 
 const fmtMoney = (n) => "$" + Number(n || 0).toLocaleString("es-AR");
 const fmtDate = (value) => {
@@ -10,11 +10,11 @@ const fmtDate = (value) => {
 };
 
 export default function PanelPropietario({ usuario }) {
-  const ownerId = usuario?.id || usuario?._id || "2";
   const [propiedades, setPropiedades] = useState([]);
   const [reservas, setReservas] = useState([]);
   const [estadisticas, setEstadisticas] = useState([]);
   const [mensaje, setMensaje] = useState("");
+  const [error, setError] = useState("");
   const [guardando, setGuardando] = useState(false);
   const [nueva, setNueva] = useState({
     titulo: "",
@@ -22,99 +22,81 @@ export default function PanelPropietario({ usuario }) {
     direccion: "",
     maxHuespedes: "4",
     precioPorNoche: "",
-    estado: "pending_review",
   });
 
-  const recalcular = (props, reservasList) => {
-    const stats = props.map((p) => {
-      const rs = reservasList.filter((r) => String(r.propiedadId) === String(p._id));
-      const noches = rs.reduce((t, r) => {
-        const ini = new Date(r.checkIn);
-        const fin = new Date(r.checkOut);
-        if (Number.isNaN(ini.getTime()) || Number.isNaN(fin.getTime())) return t;
-        return t + Math.max(1, Math.round((fin - ini) / 86400000));
-      }, 0);
-      return {
-        propiedadId: p._id,
-        titulo: p.titulo,
-        precioPorNoche: p.precioPorNoche,
-        reservas: rs.length,
-        noches,
-        ingresos: noches * (p.precioPorNoche || 0),
-        liquidacion: noches * (p.precioPorNoche || 0) * 0.9,
-      };
-    });
-    setEstadisticas(stats);
-  };
-
-  const cargarPanel = () => {
-    const props = MOCK_PROPERTIES.filter(
-      (p) => String(p.propietario?._id || p.propietario) === String(ownerId)
-    );
-    const reservasList = MOCK_RESERVATIONS.filter((r) =>
-      props.some((p) => String(p._id) === String(r.propiedadId))
-    );
-    setPropiedades(props);
-    setReservas(reservasList);
-    recalcular(props, reservasList);
+  const cargarPanel = async () => {
+    setError("");
+    try {
+      const panel = await api("/api/propietario/panel");
+      setPropiedades(panel.propiedades);
+      setReservas(panel.reservas);
+      setEstadisticas(panel.estadisticas);
+    } catch (requestError) {
+      setError(requestError.message || "No se pudo cargar el panel");
+    }
   };
 
   useEffect(() => {
-    cargarPanel();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ownerId]);
+    void cargarPanel();
+  }, []);
 
-  const totalNoches = estadisticas.reduce((t, e) => t + (e.noches || 0), 0);
-  const totalIngresos = estadisticas.reduce((t, e) => t + (e.ingresos || 0), 0);
-  const totalLiquidacion = estadisticas.reduce((t, e) => t + (e.liquidacion || 0), 0);
-
-  const publicar = (e) => {
+  const publicar = async (e) => {
     e.preventDefault();
-    const nuevaProp = {
-      _id: `mock-${Date.now()}`,
-      titulo: nueva.titulo || "Nueva quinta",
-      descripcion: nueva.descripcion || "Quinta en Goya",
-      direccion: nueva.direccion || "Goya, Corrientes",
-      maxHuespedes: Number(nueva.maxHuespedes) || 4,
-      precioPorNoche: Number(nueva.precioPorNoche) || 0,
-      estado: nueva.estado || "pending_review",
-      propietario: { _id: ownerId, nombre: usuario?.nombre || "Anfitrion", apellido: "" },
-    };
-    setPropiedades((prev) => [nuevaProp, ...prev]);
-    setMensaje("Propiedad publicada correctamente");
-    setNueva({
-      titulo: "",
-      descripcion: "",
-      direccion: "",
-      maxHuespedes: "4",
-      precioPorNoche: "",
-      estado: "pending_review",
-    });
+    setGuardando(true);
+    setError("");
+    try {
+      const result = await api("/api/propiedades", {
+        method: "POST",
+        body: JSON.stringify(nueva),
+      });
+      setMensaje(result.mensaje);
+      setNueva({
+        titulo: "",
+        descripcion: "",
+        direccion: "",
+        maxHuespedes: "4",
+        precioPorNoche: "",
+      });
+      await cargarPanel();
+    } catch (requestError) {
+      setError(requestError.message || "No se pudo publicar la propiedad");
+    } finally {
+      setGuardando(false);
+    }
   };
 
-  const guardarEdicion = (prop) => {
-    setPropiedades((prev) =>
-      prev.map((p) =>
-        String(p._id) === String(prop._id || prop.id)
-          ? {
-              ...p,
-              titulo: prop.titulo,
-              descripcion: prop.descripcion,
-              direccion: prop.direccion,
-              maxHuespedes: Number(prop.maxHuespedes),
-              precioPorNoche: Number(prop.precioPorNoche),
-              estado: prop.estado,
-            }
-          : p
-      )
-    );
-    setMensaje("Propiedad actualizada correctamente");
+  const guardarEdicion = async (prop) => {
+    setError("");
+    try {
+      const result = await api(`/api/propietario/propiedades/${prop._id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          titulo: prop.titulo,
+          descripcion: prop.descripcion,
+          direccion: prop.direccion,
+          maxHuespedes: prop.maxHuespedes,
+          precioPorNoche: prop.precioPorNoche,
+        }),
+      });
+      setMensaje(result.mensaje);
+      await cargarPanel();
+    } catch (requestError) {
+      setError(requestError.message || "No se pudo actualizar la propiedad");
+    }
   };
 
-  const eliminar = (prop) => {
+  const eliminar = async (prop) => {
     if (!window.confirm("¿Seguro que quieres eliminar esta propiedad?")) return;
-    setPropiedades((prev) => prev.filter((p) => String(p._id) !== String(prop._id || prop.id)));
-    setMensaje("Propiedad eliminada");
+    setError("");
+    try {
+      const result = await api(`/api/propietario/propiedades/${prop._id}`, {
+        method: "DELETE",
+      });
+      setMensaje(result.mensaje);
+      await cargarPanel();
+    } catch (requestError) {
+      setError(requestError.message || "No se pudo eliminar la propiedad");
+    }
   };
 
   const editarCampo = (id, campo, valor) =>
@@ -122,20 +104,17 @@ export default function PanelPropietario({ usuario }) {
       prev.map((p) => (String(p._id) === String(id) ? { ...p, [campo]: valor } : p))
     );
 
-  const propiedadNombre = (id) =>
-    propiedades.find((p) => String(p._id) === String(id))?.titulo || "-";
-
   return (
     <div className="panel-propietario">
       <header className="panel-header">
         <div>
-          <p className="panel-kicker">GoyaQuintas Premium</p>
-          <h1>Panel de Gestión Premium</h1>
+          <h1>Panel de Gestión</h1>
           <p className="panel-subtitle">Hola, {usuario?.nombre || "anfitrion"}. Administra tus quintas, reservas e ingresos.</p>
         </div>
       </header>
 
       {mensaje && <p className="ok">{mensaje}</p>}
+      {error && <p className="error">{error}</p>}
 
       <section className="panel-card">
         <div className="panel-card-header">
@@ -164,8 +143,8 @@ export default function PanelPropietario({ usuario }) {
             <input id="pub-descripcion" className="form-input" placeholder="Quinta con pileta, wifi y cochera" value={nueva.descripcion} onChange={(e) => setNueva({ ...nueva, descripcion: e.target.value })} required />
           </div>
           <div className="form-actions">
-            <button className="btn-primary btn-large" type="submit">
-              Publicar Quinta
+            <button className="btn-primary btn-large" type="submit" disabled={guardando}>
+              {guardando ? "Publicando..." : "Publicar Quinta"}
             </button>
           </div>
         </form>
@@ -202,8 +181,12 @@ export default function PanelPropietario({ usuario }) {
                     <h3>{p.titulo}</h3>
                     <p className="nota">{p.direccion || "Sin dirección"}</p>
                   </div>
-                  <span className={`estado-badge ${p.estado === "pending_review" ? "pendiente" : "aprobada"}`}>
-                    {p.estado === "pending_review" ? "Bajo revisión ⏳" : "Aprobada 🟢"}
+                  <span className={`estado-badge ${p.estado === "disponible" ? "aprobada" : "pendiente"}`}>
+                    {p.estado === "pending_review"
+                      ? "Bajo revisión ⏳"
+                      : p.estado === "suspendida"
+                        ? "Suspendida"
+                        : "Aprobada 🟢"}
                   </span>
                 </div>
                 <div className="propiedad-row-fields">
@@ -212,10 +195,6 @@ export default function PanelPropietario({ usuario }) {
                   <input className="form-input" value={p.descripcion} onChange={(e) => editarCampo(p._id, "descripcion", e.target.value)} placeholder="Descripción" />
                   <input className="form-input" value={p.direccion} onChange={(e) => editarCampo(p._id, "direccion", e.target.value)} placeholder="Dirección" />
                   <input className="form-input" type="number" min="1" value={p.maxHuespedes} onChange={(e) => editarCampo(p._id, "maxHuespedes", e.target.value)} placeholder="Huéspedes" />
-                  <select className="form-input" value={p.estado} onChange={(e) => editarCampo(p._id, "estado", e.target.value)}>
-                    <option value="pending_review">Bajo revisión</option>
-                    <option value="disponible">Aprobada / Disponible</option>
-                  </select>
                   <div className="row-actions">
                     <button className="btn-primary chico" onClick={() => guardarEdicion(p)}>
                       Guardar

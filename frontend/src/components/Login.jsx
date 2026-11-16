@@ -1,104 +1,73 @@
 ﻿import React, { useState } from "react";
+import { api } from "../api.js";
 
 export default function Login({ onLogin }) {
-  const [correo, setCorreo] = useState("");
+  const [identificador, setIdentificador] = useState("");
   const [contrasena, setContrasena] = useState("");
   const [mostrarContrasena, setMostrarContrasena] = useState(false);
   const [error, setError] = useState("");
   const [cargando, setCargando] = useState(false);
-  const [touched, setTouched] = useState({ correo: false, contrasena: false });
+  const [touched, setTouched] = useState({ identificador: false, contrasena: false });
 
-  const correoOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo);
-  const contrasenaOk = contrasena.length >= 6;
-  const correoInvalido = touched.correo && !correoOk;
+  const correoOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identificador.trim());
+  const telefonoOk = /^\+?[\d\s()-]{7,20}$/.test(identificador.trim());
+  const identificadorOk = correoOk || telefonoOk;
+  const contrasenaOk = contrasena.length >= 8;
+  const identificadorInvalido = touched.identificador && !identificadorOk;
   const contrasenaInvalida = touched.contrasena && !contrasenaOk;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
-    setTouched({ correo: true, contrasena: true });
-    if (!correoOk || !contrasenaOk) {
+    setTouched({ identificador: true, contrasena: true });
+    if (!identificadorOk || !contrasenaOk) {
       setError("Revisa los campos marcados.");
       return;
     }
     setCargando(true);
-    setError("");
-
-    window.setTimeout(() => {
-      let usuarioLogueado;
-      const email = correo.toLowerCase();
-
-      if (email === "admin@quintasgoya.com") {
-        usuarioLogueado = {
-          id: "1",
-          _id: "1",
-          nombre: "Administrador",
-          apellido: "Maestro",
-          correo,
-          telefono: "",
-          rol: "admin",
-        };
-      } else if (email.includes("propietario") || email.includes("anfitrion")) {
-        usuarioLogueado = {
-          id: "2",
-          _id: "2",
-          nombre: "Juan",
-          apellido: "Perez",
-          correo,
-          telefono: "3794000000",
-          rol: "anfitrion",
-        };
-      } else {
-        usuarioLogueado = {
-          id: "3",
-          _id: "3",
-          nombre: correo.split("@")[0] || "Usuario",
-          apellido: "Demo",
-          correo,
-          telefono: "",
-          rol: "inquilino",
-        };
-      }
-
-      try {
-        localStorage.setItem("user", JSON.stringify(usuarioLogueado));
-      } catch {
-        // ignore
-      }
-      onLogin({ mensaje: "Bienvenido", usuario: usuarioLogueado });
+    try {
+      const datos = await api("/api/login", {
+        method: "POST",
+        body: JSON.stringify({ identificador: identificador.trim(), contrasena }),
+      });
+      await onLogin(datos);
+    } catch (requestError) {
+      setError(requestError.message || "No se pudo iniciar sesión");
+    } finally {
       setCargando(false);
-    }, 350);
+    }
   };
 
   return (
     <div className="auth-page">
       <div className="auth-card">
-        <h2>Iniciar sesion</h2>
+        <h2>Iniciar sesión</h2>
         <p className="auth-subtitle">Accede a tu cuenta para gestionar reservas.</p>
         <form className="auth-form" onSubmit={handleSubmit}>
           <div className="auth-field">
-            <label className="auth-label" htmlFor="login-correo">Correo electronico</label>
+            <label className="auth-label" htmlFor="login-identificador">Correo electrónico o teléfono</label>
             <input
-              id="login-correo"
-              className={`auth-input ${correoInvalido ? "input-error" : ""}`}
-              type="email"
-              placeholder="tu@correo.com"
-              value={correo}
-              onChange={(e) => setCorreo(e.target.value)}
-              onBlur={() => setTouched((t) => ({ ...t, correo: true }))}
+              id="login-identificador"
+              className={`auth-input ${identificadorInvalido ? "input-error" : ""}`}
+              type="text"
+              autoComplete="username"
+              placeholder="Correo electrónico o teléfono"
+              value={identificador}
+              onChange={(e) => setIdentificador(e.target.value)}
+              onBlur={() => setTouched((t) => ({ ...t, identificador: true }))}
               required
             />
-            {correoInvalido && <span className="auth-error">Ingresa un correo valido.</span>}
+            {identificadorInvalido && <span className="auth-error">Ingresa un correo electrónico o teléfono válido.</span>}
           </div>
 
           <div className="auth-field">
-            <label className="auth-label" htmlFor="login-contrasena">Contrasena</label>
+            <label className="auth-label" htmlFor="login-contrasena">Contraseña</label>
             <div className="auth-input-wrap">
               <input
                 id="login-contrasena"
                 className={`auth-input ${contrasenaInvalida ? "input-error" : ""}`}
                 type={mostrarContrasena ? "text" : "password"}
-                placeholder="Minimo 6 caracteres"
+                placeholder="Mínimo 8 caracteres"
                 value={contrasena}
                 onChange={(e) => setContrasena(e.target.value)}
                 onBlur={() => setTouched((t) => ({ ...t, contrasena: true }))}
@@ -108,7 +77,7 @@ export default function Login({ onLogin }) {
                 type="button"
                 className="password-toggle"
                 onClick={() => setMostrarContrasena((v) => !v)}
-                aria-label="Mostrar u ocultar contrasena"
+                aria-label="Mostrar u ocultar contraseña"
               >
                 <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   {mostrarContrasena ? (
@@ -127,7 +96,7 @@ export default function Login({ onLogin }) {
                 </svg>
               </button>
             </div>
-            {contrasenaInvalida && <span className="auth-error">Minimo 6 caracteres.</span>}
+            {contrasenaInvalida && <span className="auth-error">Mínimo 8 caracteres.</span>}
           </div>
 
           {error && <p className="error">{error}</p>}
@@ -139,6 +108,4 @@ export default function Login({ onLogin }) {
     </div>
   );
 }
-
-
 
