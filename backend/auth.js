@@ -5,6 +5,7 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import { promisify } from "node:util";
+import bcrypt from "bcryptjs";
 import { Usuario } from "./models.js";
 
 const scrypt = promisify(scryptCallback);
@@ -17,18 +18,41 @@ export async function hashPassword(password) {
 }
 
 export async function verifyPassword(password, storedHash) {
-  const [algorithm, saltHex, hashHex] = String(storedHash || "").split("$");
-  if (
-    algorithm !== "scrypt" ||
-    !/^[0-9a-f]{32}$/i.test(saltHex) ||
-    !/^[0-9a-f]{128}$/i.test(hashHex)
-  ) {
-    return false;
+  const { valid } = await verifyPasswordWithMigration(password, storedHash);
+  return valid;
+}
+
+export async function verifyPasswordWithMigration(password, storedHash) {
+  const stored = String(storedHash || "");
+  if (typeof password !== "string" || !password || !stored) {
+    return { valid: false, needsMigration: false };
   }
 
-  const expected = Buffer.from(hashHex, "hex");
-  const actual = await scrypt(password, Buffer.from(saltHex, "hex"), expected.length);
-  return expected.length === actual.length && timingSafeEqual(expected, actual);
+  if (stored.startsWith("scrypt$")) {
+    const [algorithm, saltHex, hashHex] = stored.split("$");
+    if (
+      algorithm !== "scrypt" ||
+      !/^[0-9a-f]{32}$/i.test(saltHex) ||
+      !/^[0-9a-f]{128}$/i.test(hashHex)
+    ) {
+      return { valid: false, needsMigration: false };
+    }
+
+    const expected = Buffer.from(hashHex, "hex");
+    const actual = await scrypt(password, Buffer.from(saltHex, "hex"), expected.length);
+    return {
+      valid: expected.length === actual.length && timingSafeEqual(expected, actual),
+      needsMigration: false,
+    };
+  }
+
+  if (stored.startsWith("$2a$") || stored.startsWith("$2b$")) {
+    const valid = await bcrypt.compare(password, stored);
+    return { valid, needsMigration: valid };
+  }
+
+  const valid = password === stored;
+  return { valid, needsMigration: valid };
 }
 
 function tokenSecret() {
